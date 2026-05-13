@@ -10,7 +10,8 @@ const { startTunnel } = require('./tunnel');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+// Accept base64-encoded photos in the kid edit form
+app.use(express.json({ limit: '2mb' }));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'happy-kids-dev-secret',
   resave: false,
@@ -63,10 +64,31 @@ function getKidProfile(kidId) {
 
   const rewardsClaimed = db.prepare('SELECT COUNT(*) AS c FROM rewards WHERE kid_id = ? AND claimed = 1').get(kidId).c;
 
+  // Calendar markers: any date (past or future) that has tasks or a reward.
+  // Used by the date strip to highlight days with activity.
+  const calendarRows = db.prepare(`
+    SELECT date,
+           SUM(completed) AS done,
+           COUNT(*) AS total
+    FROM tasks WHERE kid_id = ?
+    GROUP BY date
+  `).all(kidId);
+  const rewardRows = db.prepare('SELECT date, claimed FROM rewards WHERE kid_id = ?').all(kidId);
+  const calMap = new Map();
+  for (const r of calendarRows) calMap.set(r.date, { date: r.date, total: r.total, done: r.done || 0, has_reward: false, claimed: false });
+  for (const r of rewardRows) {
+    const ex = calMap.get(r.date) || { date: r.date, total: 0, done: 0, has_reward: false, claimed: false };
+    ex.has_reward = true;
+    ex.claimed = !!r.claimed;
+    calMap.set(r.date, ex);
+  }
+  const calendar = Array.from(calMap.values());
+
   return {
     kid,
     today: { date: t, tasks: todayTasks, reward: todayReward },
     history,
+    calendar,
     stats: { ...stats, rewards_claimed: rewardsClaimed }
   };
 }
@@ -129,14 +151,33 @@ app.get('/api/kids', requireAuth, (req, res) => {
 });
 
 app.post('/api/kids', requireAuth, (req, res) => {
-  const { name, age, gender } = req.body || {};
+  const { name, age, gender, photo } = req.body || {};
   if (!name || !age || !gender) return res.status(400).json({ error: 'name, age and gender are required' });
-  const result = db.prepare('INSERT INTO kids (name, age, gender) VALUES (?, ?, ?)').run(name, parseInt(age, 10), gender);
+  const result = db.prepare('INSERT INTO kids (name, age, gender, photo) VALUES (?, ?, ?, ?)').run(name, parseInt(age, 10), gender, photo || null);
   res.json({ id: result.lastInsertRowid });
 });
 
+app.put('/api/kids/:id', requireAuth, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { name, age, gender, photo } = req.body || {};
+  if (!name || !age || !gender) return res.status(400).json({ error: 'name, age and gender are required' });
+  // photo: undefined → don't touch; null/'' → clear; string → set
+  if (photo === undefined) {
+    const result = db.prepare('UPDATE kids SET name = ?, age = ?, gender = ? WHERE id = ?').run(name, parseInt(age, 10), gender, id);
+    if (result.changes === 0) return res.status(404).json({ error: 'not found' });
+  } else {
+    const result = db.prepare('UPDATE kids SET name = ?, age = ?, gender = ?, photo = ? WHERE id = ?').run(name, parseInt(age, 10), gender, photo || null, id);
+    if (result.changes === 0) return res.status(404).json({ error: 'not found' });
+  }
+  res.json({ ok: true });
+});
+
 app.delete('/api/kids/:id', requireAuth, (req, res) => {
-  db.prepare('DELETE FROM kids WHERE id = ?').run(req.params.id);
+  const id = parseInt(req.params.id, 10);
+  // Clean up dependent rows (no FK cascade configured in schema)
+  db.prepare('DELETE FROM tasks WHERE kid_id = ?').run(id);
+  db.prepare('DELETE FROM rewards WHERE kid_id = ?').run(id);
+  db.prepare('DELETE FROM kids WHERE id = ?').run(id);
   res.json({ ok: true });
 });
 
@@ -144,6 +185,17 @@ app.get('/api/kids/:id', requireAuth, (req, res) => {
   const profile = getKidProfile(parseInt(req.params.id, 10));
   if (!profile) return res.status(404).json({ error: 'not found' });
   res.json(profile);
+});
+
+// Day view: tasks + reward for a specific date. Used by the calendar strip
+// to render past / future days without reloading the whole profile.
+app.get('/api/kids/:id/day/:date', requireAuth, (req, res) => {
+  const kidId = parseInt(req.params.id, 10);
+  const date = req.params.date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'bad date' });
+  const tasks = db.prepare('SELECT * FROM tasks WHERE kid_id = ? AND date = ? ORDER BY id').all(kidId, date);
+  const reward = db.prepare('SELECT * FROM rewards WHERE kid_id = ? AND date = ?').get(kidId, date);
+  res.json({ date, tasks, reward: reward || null });
 });
 
 // ---- Tasks ----
@@ -166,6 +218,13 @@ app.post('/api/tasks/:id/toggle', requireAuth, (req, res) => {
     newVal ? new Date().toISOString() : null,
     id
   );
+  // Auto-reset claimed reward if tasks are no longer 100% done.
+  // This ensures the password ceremony is required again next time
+  // everything is completed.
+  const row = db.prepare('SELECT SUM(completed) AS done, COUNT(*) AS total FROM tasks WHERE kid_id = ? AND date = ?').get(task.kid_id, task.date);
+  if (row.total > 0 && row.done < row.total) {
+    db.prepare('UPDATE rewards SET claimed = 0, claimed_at = NULL WHERE kid_id = ? AND date = ? AND claimed = 1').run(task.kid_id, task.date);
+  }
   res.json({ ok: true, completed: !!newVal });
 });
 

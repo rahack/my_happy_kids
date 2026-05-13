@@ -43,6 +43,15 @@ db.exec(`
   );
 `);
 
+// Lightweight migrations (SQLite doesn't support `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`)
+function ensureColumn(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some(c => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+ensureColumn('kids', 'photo', 'TEXT'); // base64 data URL (small avatar)
+
 // Seed default admin
 const adminRow = db.prepare('SELECT id FROM admin WHERE id = 1').get();
 if (!adminRow) {

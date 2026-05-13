@@ -31,6 +31,7 @@ input, select {
   background: var(--tg-theme-secondary-bg-color, #fff);
   color: inherit;
 }
+input::placeholder { color: #999; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row > * { flex: 1; }
 
@@ -45,7 +46,28 @@ input, select {
   padding: 10px 0; border-bottom: 1px solid #eee; cursor: pointer;
 }
 .kid-row:last-child { border-bottom: none; }
+.kid-row.editing { cursor: default; }
+.kid-edit-fields { flex: 1; }
 .kid-meta { color: #888; font-size: 12px; }
+.icon-btn {
+  background: transparent;
+  color: #555;
+  padding: 6px 8px;
+  font-size: 16px;
+  border-radius: 6px;
+}
+.icon-btn:hover { background: #f0f0f3; }
+/* Override global button.danger background so trash icon stays as a flat icon */
+.icon-btn.danger { background: transparent; color: #c62828; }
+.icon-btn.danger:hover { background: #f0f0f3; }
+.photo-preview {
+  width: 48px; height: 48px; flex: 0 0 48px;
+  border-radius: 50%;
+  background: #f0f1f3;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #888;
+  overflow: hidden;
+}
 
 .task {
   display: flex; align-items: center; gap: 10px;
@@ -57,6 +79,15 @@ input, select {
 .task input[type=checkbox] { width: 22px; height: 22px; flex: 0 0 22px; }
 .task .title { flex: 1; }
 .task .del { background: none; color: #c62828; padding: 4px 8px; }
+.task.readonly { background: #eef0f3; }
+.task-marker {
+  width: 22px; height: 22px; flex: 0 0 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px; font-size: 14px; font-weight: bold;
+}
+.task-marker.past.done   { background: #43a047; color: #fff; }
+.task-marker.past.missed { background: #e0e0e3; color: #888; }
+.task-marker.future      { background: #f2f3f5; color: #888; filter: grayscale(0.4); }
 
 .progress-wrap {
   background: #e0e0e3; border-radius: 999px; height: 14px; overflow: hidden;
@@ -88,7 +119,149 @@ input, select {
 .history-day .date { font-weight: bold; }
 .history-day .summary { font-size: 12px; color: #555; }
 
+/* Calendar strip under the progress bar */
+.calendar-wrap { margin: 8px 0 12px; }
+.cal-header {
+  text-align: center;
+  font-size: 13px; font-weight: 600;
+  color: #555;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+.calendar {
+  display: flex; align-items: stretch; gap: 4px;
+}
+.cal-nav {
+  flex: 0 0 auto; padding: 0 8px;
+  background: transparent; color: var(--tg-theme-button-color, #2481cc);
+  font-size: 18px; font-weight: bold;
+}
+.cal-strip {
+  display: flex; gap: 4px;
+  overflow-x: auto; scroll-behavior: smooth;
+  flex: 1; padding: 2px 0;
+}
+.cal-cell {
+  flex: 0 0 auto;
+  min-width: 44px;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 6px 4px 4px;
+  border-radius: 8px;
+  font-size: 12px; line-height: 1.1;
+  cursor: pointer; border: 2px solid transparent;
+}
+.cal-cell .cal-dow { font-size: 10px; color: inherit; opacity: 0.7; text-transform: uppercase; }
+.cal-cell .cal-day { font-size: 16px; font-weight: 600; margin-top: 2px; }
+.cal-cell .cal-markers { display: flex; gap: 3px; margin-top: 3px; min-height: 6px; }
+.cal-month-badge {
+  font-size: 9px; font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 2px;
+  opacity: 0.85;
+}
+.cal-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
+.cal-dot-tasks { background: #2481cc; }
+.cal-dot-reward { background: #f9a825; }
+
+/* Day-type colors: past = grey bg, future = white bg + black text, today = white text on green */
+.cal-past   { background: #e0e0e3; color: #1c1c1e; }
+.cal-future { background: #ffffff; color: #1c1c1e; border-color: #e0e0e3; }
+.cal-today  { background: #43a047; color: #ffffff; }
+.cal-today .cal-dot-tasks { background: #ffffff; }
+
+.cal-selected { border-color: #2481cc; }
+.cal-claimed { box-shadow: inset 0 -3px 0 #f9a825; }
+
+/* Modal overlay (mode switch auth) */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100; padding: 16px;
+}
+.modal {
+  background: var(--tg-theme-secondary-bg-color, #fff);
+  color: #1c1c1e;
+  border-radius: 14px;
+  padding: 20px 16px 16px;
+  width: 100%; max-width: 340px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+}
+
+/* Telegram-style auth modal */
+.tg-auth {
+  padding: 28px 24px 20px;
+  text-align: center;
+}
+.tg-auth-icon {
+  width: 78px; height: 78px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #5dade2, #2481cc);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 38px; line-height: 1;
+  box-shadow: 0 4px 12px rgba(36, 129, 204, 0.35);
+}
+.tg-auth-title {
+  margin: 0 0 8px;
+  font-size: 22px; font-weight: 600;
+  color: #1c1c1e;
+}
+.tg-auth-sub {
+  margin: 0 0 20px;
+  font-size: 14px; line-height: 1.4;
+  color: #707579;
+}
+.tg-field { margin-bottom: 12px; text-align: left; }
+.tg-field input {
+  width: 100%;
+  padding: 14px 14px;
+  font-size: 16px;
+  border: 1px solid #e1e3e6;
+  border-radius: 10px;
+  background: #f4f5f7;
+  color: #1c1c1e;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tg-field input:focus {
+  outline: none;
+  border-color: #2481cc;
+  background: #fff;
+}
+.tg-primary {
+  width: 100%;
+  margin-top: 8px;
+  padding: 14px;
+  font-size: 16px; font-weight: 600;
+  background: #2481cc; color: #fff;
+  border-radius: 10px;
+}
+.tg-primary:hover { background: #1f74b8; }
+/* Reward unlock form: white text on dark inputs (overrides .tg-field defaults) */
+.reward.unlock-form .tg-field input {
+  background: #1c1c1e;
+  color: #ffffff;
+  border-color: #3a3a3c;
+}
+.reward.unlock-form .tg-field input::placeholder { color: #8e8e93; }
+.reward.unlock-form .tg-field input:focus {
+  background: #1c1c1e;
+  color: #ffffff;
+  border-color: #2481cc;
+}
+
+.tg-link {
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px;
+  background: transparent;
+  color: #2481cc;
+  font-size: 15px;
+  font-weight: 500;
+}
+
 .error { color: #c62828; font-size: 13px; margin: 8px 0; }
-.muted { color: #888; font-size: 13px; }
+.muted { color: #666; font-size: 13px; }
 .section-title { font-size: 14px; color: #666; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.5px; }
 .empty { text-align: center; color: #888; padding: 20px; }
