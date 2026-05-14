@@ -5,13 +5,15 @@ if (tg) { tg.ready(); tg.expand(); }
 const root = document.getElementById('app');
 const state = {
   route: 'login',
-  user: null,
+  user: null,                // { username, role }
   kids: [],
   currentKid: null,
-  selectedDate: null,     // 'YYYY-MM-DD' — date shown under the calendar strip
-  selectedDay: null,      // { date, tasks, reward } for the selected date
+  selectedDate: null,        // 'YYYY-MM-DD' — date shown under the calendar strip
+  selectedDay: null,         // { date, tasks, reward } for the selected date
+  pendingTasks: [],          // tasks awaiting validator approval
   error: null,
-  mode: localStorage.getItem('mode') || 'view', // 'view' | 'admin'
+  mode: localStorage.getItem('mode') || 'view', // 'view' | 'admin' | 'validator'
+  modeAuthTarget: 'admin',   // which mode the auth modal is unlocking ('admin' | 'validator')
 };
 
 // Date helpers. All dates are 'YYYY-MM-DD' strings in local time.
@@ -31,6 +33,22 @@ function shiftDate(dateStr, days) {
   const dd = String(dt.getDate()).padStart(2, '0');
   return `${yy}-${mm}-${dd}`;
 }
+function formatClock(d) {
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+let _clockTickerStarted = false;
+function startClockTicker() {
+  if (_clockTickerStarted) return;
+  _clockTickerStarted = true;
+  setInterval(() => {
+    const el = document.querySelector('.cal-clock');
+    if (el) el.textContent = formatClock(new Date());
+  }, 1000);
+}
+
 function dayTypeOf(dateStr, todayDateStr) {
   if (dateStr === todayDateStr) return 'today';
   return dateStr < todayDateStr ? 'past' : 'future';
@@ -39,9 +57,18 @@ function dayTypeOf(dateStr, todayDateStr) {
 function setMode(m) {
   state.mode = m;
   localStorage.setItem('mode', m);
+  if (m !== 'admin') {
+    state.editKidId = null;
+    state.editKidError = '';
+    state.showAddKidForm = false;
+  }
   render();
 }
 const isAdmin = () => state.mode === 'admin';
+const isValidator = () => state.mode === 'validator';
+// True if the underlying session is a validator (cannot access admin endpoints
+// regardless of UI mode).
+const sessionIsValidator = () => state.user && state.user.role === 'validator';
 
 // ---- API ----
 async function api(path, options = {}) {
@@ -92,23 +119,58 @@ function showError(err) {
 
 // ---- Pages ----
 function renderLogin() {
-  const username = h('input', { placeholder: 'Логин', value: 'admin' });
-  const password = h('input', { type: 'password', placeholder: 'Пароль', value: 'admin' });
+  // Two-step login flow:
+  //   step 1 (state.loginRole == null) — role chooser: Родитель / Валидатор
+  //   step 2 (state.loginRole == 'admin'|'validator') — credentials form
+  // If there are no kids yet (fresh install), the chooser is skipped and we
+  // jump straight to admin login.
+  if (!state.loginRole) {
+    return h('div', { class: 'card' },
+      h('h1', {}, 'Happy Kids'),
+      h('p', { class: 'muted' }, 'Как вы хотите войти?'),
+      h('div', { class: 'row', style: 'margin-top: 12px' },
+        h('button', { onclick: () => { state.loginRole = 'admin'; state.error = null; render(); } }, 'Родитель 🔓'),
+        h('button', { class: 'secondary', onclick: () => { state.loginRole = 'validator'; state.error = null; render(); } }, 'Валидатор ✅')
+      )
+    );
+  }
+
+  const isValidatorLogin = state.loginRole === 'validator';
+  const username = h('input', { placeholder: 'Логин', value: isValidatorLogin ? 'validator' : 'admin' });
+  const password = h('input', { type: 'password', placeholder: 'Пароль', value: isValidatorLogin ? '' : 'admin' });
+  const submit = async () => {
+    try {
+      const res = await api('/api/login', { method: 'POST', body: { username: username.value, password: password.value } });
+      state.user = { username: res.username, role: res.role };
+      state.loginRole = null;
+      if (res.role === 'validator') {
+        setMode('validator');
+        await loadPendingTasks();
+        go('pending');
+      } else {
+        await loadKids();
+        go('kids');
+      }
+    } catch (e) { showError(e); }
+  };
+  username.onkeydown = password.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+
   return h('div', { class: 'card' },
     h('h1', {}, 'Happy Kids'),
-    h('p', { class: 'muted' }, 'Войдите как родитель'),
+    h('p', { class: 'muted' }, isValidatorLogin ? 'Вход для валидатора' : 'Вход для родителя'),
     h('div', { style: 'margin-bottom: 8px' }, username),
     h('div', { style: 'margin-bottom: 8px' }, password),
     state.error && h('div', { class: 'error' }, state.error),
-    h('button', {
-      onclick: async () => {
-        try {
-          await api('/api/login', { method: 'POST', body: { username: username.value, password: password.value } });
-          await loadKids();
-          go('kids');
-        } catch (e) { showError(e); }
-      }
-    }, 'Войти')
+    h('div', { class: 'row' },
+      // Hide "Назад" when the chooser was auto-skipped (no kids yet) —
+      // there's nothing to go back to.
+      !state.loginNoChoice && h('button', { class: 'secondary', onclick: () => {
+        state.loginRole = null;
+        state.error = null;
+        render();
+      } }, '‹ Назад'),
+      h('button', { onclick: submit }, 'Войти')
+    )
   );
 }
 
@@ -116,44 +178,94 @@ async function loadKids() {
   state.kids = await api('/api/kids');
 }
 
-function renderModeToggle() {
-  return h('button', {
-    class: 'ghost',
-    onclick: () => {
-      if (isAdmin()) {
-        // Leaving admin mode does not require a password
-        setMode('view');
-      } else {
-        // Entering admin mode requires re-authentication
-        state.showModeAuth = true;
-        state.modeAuthError = '';
-        render();
-      }
-    },
-    title: 'Переключить режим'
-  }, isAdmin() ? 'Просмотр 👀' : 'Родитель 🔓');
+async function loadPendingTasks() {
+  state.pendingTasks = await api('/api/pending-tasks');
 }
 
-// Modal overlay asking for admin credentials before switching to admin mode.
+function renderModeToggle() {
+  // Validator session: cannot become admin (different account); show only
+  // an exit button when in validator mode, and a "to validator" button in view.
+  const validatorOnly = sessionIsValidator();
+
+  if (isAdmin() || isValidator()) {
+    return h('button', {
+      class: 'ghost',
+      onclick: async () => {
+        setMode('view');
+        // If we were on the validator page (admin session in validator mode),
+        // bounce back to the kids list. Validator-only sessions have no kids
+        // list to return to and must log out instead.
+        if (state.route === 'pending') {
+          if (sessionIsValidator()) {
+            await api('/api/logout', { method: 'POST' });
+            state.user = null;
+            await bootToLogin();
+          } else {
+            await loadKids();
+            go('kids');
+          }
+        }
+      },
+      title: 'Переключить режим'
+    }, 'Просмотр 👀');
+  }
+  // View mode: offer Parent (if admin session) and/or Validator buttons.
+  const buttons = [];
+  if (!validatorOnly) {
+    buttons.push(h('button', {
+      class: 'ghost',
+      onclick: () => {
+        state.showModeAuth = true;
+        state.modeAuthTarget = 'admin';
+        state.modeAuthError = '';
+        render();
+      },
+      title: 'Войти как родитель'
+    }, 'Родитель 🔓'));
+  }
+  buttons.push(h('button', {
+    class: 'ghost',
+    onclick: () => {
+      state.showModeAuth = true;
+      state.modeAuthTarget = 'validator';
+      state.modeAuthError = '';
+      render();
+    },
+    title: 'Войти как валидатор'
+  }, 'Валидатор ✅'));
+  return h('span', {}, ...buttons);
+}
+
+// Modal overlay asking for admin OR validator credentials, depending on
+// state.modeAuthTarget. After successful verification we switch UI mode.
 function renderModeAuthModal() {
   if (!state.showModeAuth) return null;
-  const uInput = h('input', { placeholder: 'Логин', value: 'admin' });
+  const target = state.modeAuthTarget || 'admin';
+  const isValidatorTarget = target === 'validator';
+  const defaultUser = isValidatorTarget ? 'validator' : 'admin';
+  const uInput = h('input', { placeholder: 'Логин', value: defaultUser });
   const pInput = h('input', { type: 'password', placeholder: 'Пароль' });
   const submit = async () => {
     try {
-      await api('/api/verify-admin', {
+      const endpoint = isValidatorTarget ? '/api/verify-validator' : '/api/verify-admin';
+      await api(endpoint, {
         method: 'POST',
         body: { username: uInput.value, password: pInput.value }
       });
       state.showModeAuth = false;
       state.modeAuthError = '';
-      setMode('admin');
+      if (isValidatorTarget) {
+        setMode('validator');
+        await loadPendingTasks();
+        go('pending');
+      } else {
+        setMode('admin');
+      }
     } catch (e) {
       state.modeAuthError = 'Неверный логин или пароль';
       render();
     }
   };
-  // Submit on Enter from either field
   uInput.onkeydown = pInput.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
 
   return h('div', { class: 'modal-overlay', onclick: (e) => {
@@ -163,9 +275,12 @@ function renderModeAuthModal() {
     }
   } },
     h('div', { class: 'modal tg-auth' },
-      h('div', { class: 'tg-auth-icon' }, '🔑'),
-      h('h2', { class: 'tg-auth-title' }, 'Вход'),
-      h('p', { class: 'tg-auth-sub' }, 'Введите логин и пароль родителя, чтобы перейти в режим редактирования.'),
+      h('div', { class: 'tg-auth-icon' }, isValidatorTarget ? '✅' : '🔑'),
+      h('h2', { class: 'tg-auth-title' }, isValidatorTarget ? 'Вход валидатора' : 'Вход'),
+      h('p', { class: 'tg-auth-sub' },
+        isValidatorTarget
+          ? 'Введите логин и пароль валидатора, чтобы подтверждать выполнение заданий.'
+          : 'Введите логин и пароль родителя, чтобы перейти в режим редактирования.'),
       h('div', { class: 'tg-field' }, uInput),
       h('div', { class: 'tg-field' }, pInput),
       state.modeAuthError && h('div', { class: 'error', style: 'text-align: center' }, state.modeAuthError),
@@ -205,7 +320,7 @@ function readPhotoAsDataURL(file, maxSize = 256) {
 function renderAvatar(k, size = 40) {
   const style = `width:${size}px;height:${size}px;border-radius:50%;flex:0 0 ${size}px;` +
     'display:flex;align-items:center;justify-content:center;' +
-    'background:#dfe3ea;color:#555;font-weight:600;overflow:hidden;';
+    'background:#5eb5f7;color:#fff;font-weight:600;overflow:hidden;';
   if (k.photo) {
     const img = h('img', { src: k.photo, alt: k.name, style: `width:100%;height:100%;object-fit:cover` });
     return h('div', { class: 'avatar', style }, img);
@@ -241,28 +356,42 @@ function renderKidsList() {
       h('div', {},
         renderModeToggle(),
         isAdmin() && h('button', { class: 'ghost', onclick: () => go('settings') }, 'Настройки'),
-        isAdmin() && h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); go('login'); } }, 'Выйти')
+        isAdmin() && h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
       )
     ),
-    isAdmin() && h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, 'Добавить ребёнка'),
-      h('div', { class: 'row', style: 'margin-bottom: 8px' }, nameInput, ageInput, genderSel),
-      h('div', { class: 'row', style: 'margin-bottom: 8px; align-items: center' },
-        photoPreview,
-        h('button', { class: 'secondary', onclick: () => photoInput.click() }, 'Выбрать фото'),
-        photoInput
-      ),
-      state.error && h('div', { class: 'error' }, state.error),
-      h('button', {
-        onclick: async () => {
-          try {
-            if (!nameInput.value || !ageInput.value) throw new Error('Заполните имя и возраст');
-            await api('/api/kids', { method: 'POST', body: { name: nameInput.value, age: ageInput.value, gender: genderSel.value, photo: newPhoto } });
-            await loadKids();
-            render();
-          } catch (e) { showError(e); }
-        }
-      }, 'Добавить')
+    isAdmin() && (state.showAddKidForm
+      ? h('div', { class: 'card' },
+          h('div', { class: 'section-title' }, 'Добавить ребёнка'),
+          h('div', { class: 'row', style: 'margin-bottom: 8px' }, nameInput, ageInput, genderSel),
+          h('div', { class: 'row', style: 'margin-bottom: 8px; align-items: center' },
+            photoPreview,
+            h('button', { class: 'secondary', onclick: () => photoInput.click() }, 'Выбрать фото'),
+            photoInput
+          ),
+          state.error && h('div', { class: 'error' }, state.error),
+          h('div', { class: 'row' },
+            h('button', { class: 'secondary', onclick: () => {
+              state.showAddKidForm = false;
+              state.error = null;
+              render();
+            } }, 'Отмена'),
+            h('button', {
+              onclick: async () => {
+                try {
+                  if (!nameInput.value || !ageInput.value) throw new Error('Заполните имя и возраст');
+                  await api('/api/kids', { method: 'POST', body: { name: nameInput.value, age: ageInput.value, gender: genderSel.value, photo: newPhoto } });
+                  state.showAddKidForm = false;
+                  state.error = null;
+                  await loadKids();
+                  render();
+                } catch (e) { showError(e); }
+              }
+            }, 'Добавить')
+          )
+        )
+      : h('div', { class: 'card', style: 'text-align: center' },
+          h('button', { onclick: () => { state.showAddKidForm = true; render(); } }, 'Добавить ребёнка')
+        )
     ),
     h('div', { class: 'card' },
       h('div', { class: 'section-title' }, 'Список'),
@@ -482,16 +611,14 @@ function renderCalendarStrip(kid, todayDate) {
     ));
   }
 
-  // Header showing month(s)/year of the visible window
-  const monthNames = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-  const [ay, am] = anchor.split('-').map(Number);
-  const endDate = shiftDate(anchor, windowDays - 1);
-  const [ey, em] = endDate.split('-').map(Number);
-  const headerLabel = (am === em && ay === ey)
-    ? `${monthNames[am - 1]} ${ay}`
-    : (ay === ey
-        ? `${monthNames[am - 1]} – ${monthNames[em - 1]} ${ey}`
-        : `${monthNames[am - 1]} ${ay} – ${monthNames[em - 1]} ${ey}`);
+  // Header: full selected date (day month year, weekday) + live clock
+  const monthGen = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+  const dowFull = ['воскресенье','понедельник','вторник','среда','четверг','пятница','суббота'];
+  const [sy, sm, sd] = selected.split('-').map(Number);
+  const selDt = new Date(sy, sm - 1, sd);
+  const headerLabel = `${sd} ${monthGen[sm - 1]} ${sy} г., ${dowFull[selDt.getDay()]}`;
+  const clockEl = h('span', { class: 'cal-clock' }, formatClock(new Date()));
+  startClockTicker();
 
   const strip = h('div', { class: 'cal-strip' }, ...cells);
   // After mount, center the selected cell horizontally inside the strip
@@ -503,7 +630,10 @@ function renderCalendarStrip(kid, todayDate) {
   });
 
   return h('div', { class: 'calendar-wrap' },
-    h('div', { class: 'cal-header' }, headerLabel),
+    h('div', { class: 'cal-header' },
+      h('span', { class: 'cal-header-date' }, headerLabel),
+      clockEl
+    ),
     h('div', { class: 'calendar' },
       h('button', {
         class: 'cal-nav',
@@ -780,15 +910,6 @@ function renderKid() {
   const canEditTasks = admin && (dayType === 'today' || dayType === 'future');
   const canToggleTasks = dayType === 'today';
 
-  // Human-readable header for the selected date
-  const [sy, sm, sd] = day.date.split('-').map(Number);
-  const dtSel = new Date(sy, sm - 1, sd);
-  const monthNames = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
-  const dowNames = ['воскресенье','понедельник','вторник','среда','четверг','пятница','суббота'];
-  const dayLabel = dayType === 'today'
-    ? `Сегодня — ${day.date}`
-    : `${dtSel.getDate()} ${monthNames[dtSel.getMonth()]}, ${dowNames[dtSel.getDay()]}`;
-
   const taskInput = h('input', { placeholder: dayType === 'today' ? 'Новое задание на сегодня' : `Новое задание на ${day.date}` });
 
   const emptyMsg =
@@ -816,7 +937,6 @@ function renderKid() {
 
     h('div', { class: 'card' },
       h('div', { class: 'muted' }, `${kid.age} лет, ${kid.gender}`),
-      h('div', { class: 'section-title' }, dayLabel),
       h('div', { class: 'progress-wrap' }, h('div', { class: 'progress-bar', style: `width: ${pct}%` })),
       h('div', { class: 'progress-label' }, `${done} / ${total} (${pct}%)`),
 
@@ -830,7 +950,8 @@ function renderKid() {
         if (canToggleTasks) {
           marker = h('input', {
             type: 'checkbox',
-            checked: !!t.completed,
+            // Show checked while pending OR approved — kid sees their tick stays
+            checked: !!t.completed || !!t.pending,
             onchange: async () => { await api(`/api/tasks/${t.id}/toggle`, { method: 'POST' }); reloadKid(); }
           });
         } else if (dayType === 'future') {
@@ -839,9 +960,10 @@ function renderKid() {
           // past, or today in view mode — show current state without checkbox
           marker = h('div', { class: 'task-marker past ' + (t.completed ? 'done' : 'missed') }, t.completed ? '✓' : '○');
         }
-        return h('div', { class: 'task' + (t.completed ? ' done' : '') + (!canToggleTasks ? ' readonly' : '') },
+        return h('div', { class: 'task' + (t.completed ? ' done' : '') + (t.pending ? ' pending' : '') + (!canToggleTasks ? ' readonly' : '') },
           marker,
           h('div', { class: 'title' }, t.title),
+          t.pending && h('span', { class: 'task-pending-badge', title: 'Ждёт подтверждения валидатора' }, 'На проверке'),
           canEditTasks && admin && h('button', { class: 'del', onclick: async () => {
             await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
             reloadKid();
@@ -912,6 +1034,57 @@ function renderSettings() {
   );
 }
 
+function renderPending() {
+  const items = state.pendingTasks || [];
+  const grouped = new Map();
+  for (const t of items) {
+    const key = `${t.kid_id}|${t.kid_name}|${t.kid_photo || ''}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(t);
+  }
+
+  return h('div', {},
+    h('div', { class: 'header' },
+      h('h1', {}, 'На проверке'),
+      h('div', {},
+        renderModeToggle(),
+        h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
+      )
+    ),
+    items.length === 0
+      ? h('div', { class: 'card' },
+          h('div', { class: 'empty' }, 'Нет заданий, ждущих подтверждения. Можно отдохнуть! ✨')
+        )
+      : Array.from(grouped.entries()).map(([key, tasks]) => {
+          const [, name, photo] = key.split('|');
+          const kidStub = { name, photo: photo || null };
+          return h('div', { class: 'card' },
+            h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:8px' },
+              renderAvatar(kidStub, 36),
+              h('div', { style: 'font-weight:600' }, name)
+            ),
+            ...tasks.map(t => h('div', { class: 'task pending' },
+              h('div', { class: 'task-marker pending-mark' }, '⏳'),
+              h('div', { class: 'title' },
+                h('div', {}, t.title),
+                h('div', { class: 'muted', style: 'font-size:12px' }, t.date)
+              ),
+              h('button', { onclick: async () => {
+                await api(`/api/tasks/${t.id}/approve`, { method: 'POST' });
+                await loadPendingTasks();
+                render();
+              } }, 'Подтвердить'),
+              h('button', { class: 'secondary', onclick: async () => {
+                await api(`/api/tasks/${t.id}/reject`, { method: 'POST' });
+                await loadPendingTasks();
+                render();
+              } }, 'Отклонить')
+            ))
+          );
+        })
+  );
+}
+
 // ---- Render dispatcher ----
 function render() {
   root.innerHTML = '';
@@ -921,6 +1094,7 @@ function render() {
     case 'kids': view = renderKidsList(); break;
     case 'kid': view = renderKid(); break;
     case 'settings': view = renderSettings(); break;
+    case 'pending': view = renderPending(); break;
     default: view = renderLogin();
   }
   root.append(view);
@@ -929,16 +1103,41 @@ function render() {
 }
 
 // ---- Boot ----
+async function bootToLogin() {
+  try {
+    const probe = await api('/api/has-kids');
+    if (!probe.has_kids) {
+      // Fresh install — go straight to admin login, hide the "back" button.
+      state.loginRole = 'admin';
+      state.loginNoChoice = true;
+    } else {
+      state.loginRole = null;
+      state.loginNoChoice = false;
+    }
+  } catch (e) {
+    state.loginRole = null;
+    state.loginNoChoice = false;
+  }
+  go('login');
+}
+
 (async () => {
   try {
     const me = await api('/api/me');
     if (me.authenticated) {
-      await loadKids();
-      go('kids');
+      state.user = { username: me.username, role: me.role };
+      if (me.role === 'validator') {
+        setMode('validator');
+        await loadPendingTasks();
+        go('pending');
+      } else {
+        await loadKids();
+        go('kids');
+      }
     } else {
-      go('login');
+      await bootToLogin();
     }
   } catch (e) {
-    go('login');
+    await bootToLogin();
   }
 })();

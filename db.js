@@ -51,6 +51,7 @@ function ensureColumn(table, column, definition) {
   }
 }
 ensureColumn('kids', 'photo', 'TEXT'); // base64 data URL (small avatar)
+ensureColumn('tasks', 'pending', 'INTEGER NOT NULL DEFAULT 0'); // checked by user but awaits validator approval
 
 // Seed default admin
 const adminRow = db.prepare('SELECT id FROM admin WHERE id = 1').get();

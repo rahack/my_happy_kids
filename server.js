@@ -22,8 +22,21 @@ app.use(session({
 // ---- Helpers ----
 const today = () => new Date().toISOString().slice(0, 10);
 
+// Hardcoded validator credentials. Validators only approve task check-marks;
+// they cannot manage kids/tasks/rewards.
+const VALIDATOR_USER = 'validator';
+const VALIDATOR_PASS = '12345';
+
 function requireAuth(req, res, next) {
-  if (!req.session.adminId) return res.status(401).json({ error: 'unauthorized' });
+  if (!req.session.role) return res.status(401).json({ error: 'unauthorized' });
+  next();
+}
+function requireAdmin(req, res, next) {
+  if (req.session.role !== 'admin') return res.status(403).json({ error: 'admin required' });
+  next();
+}
+function requireValidator(req, res, next) {
+  if (req.session.role !== 'validator') return res.status(403).json({ error: 'validator required' });
   next();
 }
 
@@ -94,14 +107,36 @@ function getKidProfile(kidId) {
 }
 
 // ---- Auth ----
+function tryAdmin(username, password) {
+  const admin = db.prepare('SELECT * FROM admin WHERE id = 1').get();
+  if (!admin || admin.username !== username || !bcrypt.compareSync(password || '', admin.password_hash)) return null;
+  return admin;
+}
+function isValidator(username, password) {
+  return username === VALIDATOR_USER && password === VALIDATOR_PASS;
+}
+
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
-  const admin = db.prepare('SELECT * FROM admin WHERE id = 1').get();
-  if (!admin || admin.username !== username || !bcrypt.compareSync(password || '', admin.password_hash)) {
-    return res.status(401).json({ error: 'invalid credentials' });
+  const admin = tryAdmin(username, password);
+  if (admin) {
+    req.session.role = 'admin';
+    req.session.username = admin.username;
+    return res.json({ ok: true, username: admin.username, role: 'admin' });
   }
-  req.session.adminId = admin.id;
-  res.json({ ok: true, username: admin.username });
+  if (isValidator(username, password)) {
+    req.session.role = 'validator';
+    req.session.username = VALIDATOR_USER;
+    return res.json({ ok: true, username: VALIDATOR_USER, role: 'validator' });
+  }
+  res.status(401).json({ error: 'invalid credentials' });
+});
+
+// Public probe used by the login screen: when the database has no kids yet,
+// the UI skips the "who are you" chooser and goes straight to admin login.
+app.get('/api/has-kids', (req, res) => {
+  const row = db.prepare('SELECT COUNT(*) AS c FROM kids').get();
+  res.json({ has_kids: row.c > 0 });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -109,23 +144,27 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/me', (req, res) => {
-  if (!req.session.adminId) return res.json({ authenticated: false });
-  const admin = db.prepare('SELECT id, username FROM admin WHERE id = 1').get();
-  res.json({ authenticated: true, username: admin.username });
+  if (!req.session.role) return res.json({ authenticated: false });
+  res.json({ authenticated: true, username: req.session.username, role: req.session.role });
 });
 
 // Re-verify admin credentials without changing session. Used to unlock
 // sensitive UI (e.g. reveal reward) when the kid is sitting at the device.
 app.post('/api/verify-admin', requireAuth, (req, res) => {
   const { username, password } = req.body || {};
-  const admin = db.prepare('SELECT * FROM admin WHERE id = 1').get();
-  if (!admin || admin.username !== username || !bcrypt.compareSync(password || '', admin.password_hash)) {
-    return res.status(401).json({ error: 'invalid credentials' });
-  }
+  if (!tryAdmin(username, password)) return res.status(401).json({ error: 'invalid credentials' });
   res.json({ ok: true });
 });
 
-app.post('/api/change-password', requireAuth, (req, res) => {
+// Re-verify validator credentials. Used by the mode toggle to switch into
+// validator mode without changing the active session.
+app.post('/api/verify-validator', requireAuth, (req, res) => {
+  const { username, password } = req.body || {};
+  if (!isValidator(username, password)) return res.status(401).json({ error: 'invalid credentials' });
+  res.json({ ok: true });
+});
+
+app.post('/api/change-password', requireAdmin, (req, res) => {
   const { oldPassword, newPassword } = req.body || {};
   if (!newPassword || newPassword.length < 3) return res.status(400).json({ error: 'new password too short' });
   const admin = db.prepare('SELECT * FROM admin WHERE id = 1').get();
@@ -138,7 +177,7 @@ app.post('/api/change-password', requireAuth, (req, res) => {
 });
 
 // ---- Kids ----
-app.get('/api/kids', requireAuth, (req, res) => {
+app.get('/api/kids', requireAdmin, (req, res) => {
   const t = today();
   const kids = db.prepare('SELECT * FROM kids ORDER BY name').all();
   // Attach today's progress to each kid
@@ -150,14 +189,14 @@ app.get('/api/kids', requireAuth, (req, res) => {
   res.json(enriched);
 });
 
-app.post('/api/kids', requireAuth, (req, res) => {
+app.post('/api/kids', requireAdmin, (req, res) => {
   const { name, age, gender, photo } = req.body || {};
   if (!name || !age || !gender) return res.status(400).json({ error: 'name, age and gender are required' });
   const result = db.prepare('INSERT INTO kids (name, age, gender, photo) VALUES (?, ?, ?, ?)').run(name, parseInt(age, 10), gender, photo || null);
   res.json({ id: result.lastInsertRowid });
 });
 
-app.put('/api/kids/:id', requireAuth, (req, res) => {
+app.put('/api/kids/:id', requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { name, age, gender, photo } = req.body || {};
   if (!name || !age || !gender) return res.status(400).json({ error: 'name, age and gender are required' });
@@ -172,7 +211,7 @@ app.put('/api/kids/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/kids/:id', requireAuth, (req, res) => {
+app.delete('/api/kids/:id', requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   // Clean up dependent rows (no FK cascade configured in schema)
   db.prepare('DELETE FROM tasks WHERE kid_id = ?').run(id);
@@ -181,7 +220,7 @@ app.delete('/api/kids/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/kids/:id', requireAuth, (req, res) => {
+app.get('/api/kids/:id', requireAdmin, (req, res) => {
   const profile = getKidProfile(parseInt(req.params.id, 10));
   if (!profile) return res.status(404).json({ error: 'not found' });
   res.json(profile);
@@ -189,7 +228,7 @@ app.get('/api/kids/:id', requireAuth, (req, res) => {
 
 // Day view: tasks + reward for a specific date. Used by the calendar strip
 // to render past / future days without reloading the whole profile.
-app.get('/api/kids/:id/day/:date', requireAuth, (req, res) => {
+app.get('/api/kids/:id/day/:date', requireAdmin, (req, res) => {
   const kidId = parseInt(req.params.id, 10);
   const date = req.params.date;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'bad date' });
@@ -199,7 +238,7 @@ app.get('/api/kids/:id/day/:date', requireAuth, (req, res) => {
 });
 
 // ---- Tasks ----
-app.post('/api/kids/:id/tasks', requireAuth, (req, res) => {
+app.post('/api/kids/:id/tasks', requireAdmin, (req, res) => {
   const kidId = parseInt(req.params.id, 10);
   const { date, title } = req.body || {};
   const d = date || today();
@@ -208,33 +247,77 @@ app.post('/api/kids/:id/tasks', requireAuth, (req, res) => {
   res.json({ id: result.lastInsertRowid });
 });
 
+// Toggle a task's check-mark. State machine:
+//   open     (completed=0, pending=0)  → pending  (completed=0, pending=1)
+//   pending  (completed=0, pending=1)  → open    (uncheck before validation)
+//   approved (completed=1, pending=0)  → open    (admin/kid unchecked an approved task)
+// Approval (pending → completed) is a separate endpoint reserved for validators.
 app.post('/api/tasks/:id/toggle', requireAuth, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!task) return res.status(404).json({ error: 'not found' });
-  const newVal = task.completed ? 0 : 1;
-  db.prepare('UPDATE tasks SET completed = ?, completed_at = ? WHERE id = ?').run(
-    newVal,
-    newVal ? new Date().toISOString() : null,
-    id
-  );
-  // Auto-reset claimed reward if tasks are no longer 100% done.
-  // This ensures the password ceremony is required again next time
-  // everything is completed.
+
+  let completed, pending, completedAt;
+  if (task.completed) {
+    completed = 0; pending = 0; completedAt = null;
+  } else if (task.pending) {
+    completed = 0; pending = 0; completedAt = null;
+  } else {
+    completed = 0; pending = 1; completedAt = null;
+  }
+  db.prepare('UPDATE tasks SET completed = ?, pending = ?, completed_at = ? WHERE id = ?')
+    .run(completed, pending, completedAt, id);
+
+  // Auto-reset claimed reward if tasks are no longer 100% approved.
   const row = db.prepare('SELECT SUM(completed) AS done, COUNT(*) AS total FROM tasks WHERE kid_id = ? AND date = ?').get(task.kid_id, task.date);
   if (row.total > 0 && row.done < row.total) {
     db.prepare('UPDATE rewards SET claimed = 0, claimed_at = NULL WHERE kid_id = ? AND date = ? AND claimed = 1').run(task.kid_id, task.date);
   }
-  res.json({ ok: true, completed: !!newVal });
+  res.json({ ok: true, completed: !!completed, pending: !!pending });
 });
 
-app.delete('/api/tasks/:id', requireAuth, (req, res) => {
+// Validator approves a pending check-mark. Either an admin session or a
+// validator session can call this — the validator-mode UI is gated by a
+// separate password challenge (POST /api/verify-validator).
+app.post('/api/tasks/:id/approve', requireAuth, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  if (!task) return res.status(404).json({ error: 'not found' });
+  if (!task.pending) return res.status(400).json({ error: 'task is not pending validation' });
+  db.prepare('UPDATE tasks SET completed = 1, pending = 0, completed_at = ? WHERE id = ?')
+    .run(new Date().toISOString(), id);
+  res.json({ ok: true });
+});
+
+// Validator rejects a pending check-mark — sends task back to "open".
+app.post('/api/tasks/:id/reject', requireAuth, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  if (!task) return res.status(404).json({ error: 'not found' });
+  if (!task.pending) return res.status(400).json({ error: 'task is not pending validation' });
+  db.prepare('UPDATE tasks SET completed = 0, pending = 0, completed_at = NULL WHERE id = ?').run(id);
+  res.json({ ok: true });
+});
+
+// List of all tasks awaiting validator approval, with kid info.
+app.get('/api/pending-tasks', requireAuth, (req, res) => {
+  const rows = db.prepare(`
+    SELECT t.id, t.title, t.date, t.kid_id, k.name AS kid_name, k.photo AS kid_photo
+    FROM tasks t
+    JOIN kids k ON k.id = t.kid_id
+    WHERE t.pending = 1
+    ORDER BY t.date DESC, k.name, t.id
+  `).all();
+  res.json(rows);
+});
+
+app.delete('/api/tasks/:id', requireAdmin, (req, res) => {
   db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
 // ---- Rewards ----
-app.post('/api/kids/:id/reward', requireAuth, (req, res) => {
+app.post('/api/kids/:id/reward', requireAdmin, (req, res) => {
   const kidId = parseInt(req.params.id, 10);
   const { date, title } = req.body || {};
   const d = date || today();
@@ -251,7 +334,7 @@ app.post('/api/kids/:id/reward', requireAuth, (req, res) => {
   }
 });
 
-app.post('/api/rewards/:id/claim', requireAuth, (req, res) => {
+app.post('/api/rewards/:id/claim', requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const reward = db.prepare('SELECT * FROM rewards WHERE id = ?').get(id);
   if (!reward) return res.status(404).json({ error: 'not found' });

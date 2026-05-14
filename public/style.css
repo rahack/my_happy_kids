@@ -80,6 +80,16 @@ input::placeholder { color: #999; }
 .task .title { flex: 1; }
 .task .del { background: none; color: #c62828; padding: 4px 8px; }
 .task.readonly { background: #eef0f3; }
+.task.pending { background: #fff8e1; }
+.task-pending-badge {
+  font-size: 11px; font-weight: 600;
+  background: #fb8c00; color: #fff;
+  padding: 2px 8px; border-radius: 6px;
+  margin-left: 6px; white-space: nowrap;
+}
+.task-marker.pending-mark {
+  background: #fb8c00; color: #fff;
+}
 .task-marker {
   width: 22px; height: 22px; flex: 0 0 22px;
   display: flex; align-items: center; justify-content: center;
@@ -122,12 +132,15 @@ input::placeholder { color: #999; }
 /* Calendar strip under the progress bar */
 .calendar-wrap { margin: 8px 0 12px; }
 .cal-header {
-  text-align: center;
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 8px;
   font-size: 13px; font-weight: 600;
   color: #555;
   letter-spacing: 0.3px;
   margin-bottom: 4px;
 }
+.cal-header-date { flex: 1; }
+.cal-clock { font-variant-numeric: tabular-nums; opacity: 0.85; }
 .calendar {
   display: flex; align-items: stretch; gap: 4px;
 }
