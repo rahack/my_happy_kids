@@ -275,6 +275,31 @@ input::placeholder { color: #999; }
 }
 
 .error { color: #c62828; font-size: 13px; margin: 8px 0; }
+.family-select {
+  margin-top: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  color: #444;
+  background: #f0f4f8;
+  border: 1px solid #cfd8dc;
+  border-radius: 6px;
+  max-width: 100%;
+}
+.flash-success {
+  color: #1b5e20;
+  background: #e8f5e9;
+  border: 1px solid #c8e6c9;
+  border-radius: 6px;
+  font-size: 13px;
+  padding: 6px 10px;
+  margin: 8px 0;
+  pointer-events: none;
+  animation: flash-fade 2.5s ease forwards;
+}
+@keyframes flash-fade {
+  0%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}
 .muted { color: #666; font-size: 13px; }
 .section-title { font-size: 14px; color: #666; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.5px; }
 .empty { text-align: center; color: #888; padding: 20px; }

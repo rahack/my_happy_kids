@@ -1,5 +1,8 @@
 const { Telegraf, Markup } = require('telegraf');
 
+let _botUsername = '';
+function getBotUsername() { return _botUsername; }
+
 async function startBot() {
   const token = process.env.TELEGRAM_TOKEN;
   if (!token) {
@@ -13,21 +16,38 @@ async function startBot() {
   // the bot has launched can still be picked up.
   const getWebAppUrl = () => process.env.WEBAPP_URL || '';
 
+  // Append an invite token to the WebApp URL so the Mini App can pick it up
+  // from location.search on boot.
+  function withInvite(baseUrl, payload) {
+    if (!payload || !payload.startsWith('inv_')) return baseUrl;
+    const token = payload.slice('inv_'.length);
+    if (!token) return baseUrl;
+    return baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'invite=' + encodeURIComponent(token);
+  }
+
   bot.start(async (ctx) => {
     const webAppUrl = getWebAppUrl();
-    // Always remove any leftover reply keyboard from previous sessions —
-    // we use the Menu Button (left of input) as the primary entry point now.
-    if (webAppUrl) {
-      await ctx.reply(
-        'Привет! Это панель администратора Happy Kids. Откройте Mini App кнопкой «Открыть» слева от поля ввода (или /open).',
-        Markup.removeKeyboard()
-      );
-    } else {
+    const payload = ctx.startPayload; // text after "/start "
+    if (!webAppUrl) {
       await ctx.reply(
         'Бот запущен, но публичный URL ещё не получен. Подождите пару секунд и пришлите /start снова, либо задайте WEBAPP_URL в .env.',
         Markup.removeKeyboard()
       );
+      return;
     }
+    if (payload && payload.startsWith('inv_')) {
+      // Invite flow: open Mini App with the token in the URL.
+      const inviteUrl = withInvite(webAppUrl, payload);
+      await ctx.reply(
+        'Вас пригласили в семью Happy Kids в качестве валидатора. Откройте приложение, чтобы принять приглашение.',
+        Markup.inlineKeyboard([[Markup.button.webApp('Принять приглашение', inviteUrl)]])
+      );
+      return;
+    }
+    await ctx.reply(
+      'Привет! Это панель администратора Happy Kids. Откройте Mini App кнопкой «Открыть» слева от поля ввода (или /open).',
+      Markup.removeKeyboard()
+    );
   });
 
   bot.command('open', async (ctx) => {
@@ -42,6 +62,7 @@ async function startBot() {
   console.log('[bot] starting...');
   bot.launch().catch(err => console.error('[bot] runtime error:', err.message));
   bot.telegram.getMe().then(me => {
+    _botUsername = me.username;
     console.log(`[bot] @${me.username} ready`);
   }).catch(err => {
     console.error('[bot] getMe failed (token invalid?):', err.message);
@@ -72,4 +93,4 @@ async function startBot() {
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
 
-module.exports = { startBot };
+module.exports = { startBot, getBotUsername };

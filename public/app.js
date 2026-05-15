@@ -5,16 +5,48 @@ if (tg) { tg.ready(); tg.expand(); }
 const root = document.getElementById('app');
 const state = {
   route: 'login',
-  user: null,                // { username, role }
+  user: null,                // { username, role, tg_linked }
   kids: [],
   currentKid: null,
   selectedDate: null,        // 'YYYY-MM-DD' — date shown under the calendar strip
   selectedDay: null,         // { date, tasks, reward } for the selected date
   pendingTasks: [],          // tasks awaiting validator approval
+  validators: [],            // list of validators (admin's family)
   error: null,
   mode: localStorage.getItem('mode') || 'view', // 'view' | 'admin' | 'validator'
   modeAuthTarget: 'admin',   // which mode the auth modal is unlocking ('admin' | 'validator')
 };
+
+// Telegram initData — non-empty only when running inside the Telegram Mini App.
+const tgInitData = (tg && tg.initData) || '';
+
+// Invite token from URL (?invite=...). Set when the user opened the app via
+// an invite link from the bot. Consumed once after auth, then forgotten.
+function readInviteFromUrl() {
+  try {
+    const t = new URL(window.location.href).searchParams.get('invite');
+    return t || '';
+  } catch { return ''; }
+}
+
+// Try Telegram-based auto-login / binding. Returns the parsed response on
+// success (action: 'login' | 'bound') or null when not applicable / 401.
+async function tryTelegramAuth() {
+  if (!tgInitData) return null;
+  try {
+    return await api('/api/tg-auth', { method: 'POST', body: { initData: tgInitData } });
+  } catch (e) {
+    return null;
+  }
+}
+
+// After an explicit logout, the user may want to sign in under a different
+// account (e.g. their TG is bound to a validator, but they want admin/admin).
+// We set this flag so the boot sequence skips the Telegram auto-login until
+// the Mini App is closed and reopened (sessionStorage clears with the tab).
+function suppressTgAutoLogin() { try { sessionStorage.setItem('tg_skip', '1'); } catch {} }
+function tgAutoLoginSuppressed() { try { return sessionStorage.getItem('tg_skip') === '1'; } catch { return false; } }
+function clearTgSuppression() { try { sessionStorage.removeItem('tg_skip'); } catch {} }
 
 // Date helpers. All dates are 'YYYY-MM-DD' strings in local time.
 function todayStr() {
@@ -52,6 +84,29 @@ function startClockTicker() {
 function dayTypeOf(dateStr, todayDateStr) {
   if (dateStr === todayDateStr) return 'today';
   return dateStr < todayDateStr ? 'past' : 'future';
+}
+
+// Dropdown showing the current family context with options to switch into
+// any other family the user has access to. Returns null when there's only
+// one context available (nothing to switch).
+function renderFamilySwitcher() {
+  if (!state.user || !state.user.can_switch_context) return null;
+  const families = state.families || [];
+  if (families.length < 2) return null;
+  const currentParentId = state.user.context && state.user.context.parent_id;
+  const sel = h('select', { class: 'family-select' },
+    ...families.map(f => h('option', {
+      value: String(f.parent_id),
+      selected: f.parent_id === currentParentId
+    }, f.is_self ? `Моя семья` : `${f.parent_username} (${f.role === 'admin' ? 'админ' : 'валидатор'})`))
+  );
+  sel.onchange = async () => {
+    const pid = parseInt(sel.value, 10);
+    if (pid === currentParentId) return;
+    try { await switchFamilyContext(pid); }
+    catch (e) { showError(e); }
+  };
+  return sel;
 }
 
 function setMode(m) {
@@ -119,56 +174,54 @@ function showError(err) {
 
 // ---- Pages ----
 function renderLogin() {
-  // Two-step login flow:
-  //   step 1 (state.loginRole == null) — role chooser: Родитель / Валидатор
-  //   step 2 (state.loginRole == 'admin'|'validator') — credentials form
-  // If there are no kids yet (fresh install), the chooser is skipped and we
-  // jump straight to admin login.
-  if (!state.loginRole) {
-    return h('div', { class: 'card' },
-      h('h1', {}, 'Happy Kids'),
-      h('p', { class: 'muted' }, 'Как вы хотите войти?'),
-      h('div', { class: 'row', style: 'margin-top: 12px' },
-        h('button', { onclick: () => { state.loginRole = 'admin'; state.error = null; render(); } }, 'Родитель 🔓'),
-        h('button', { class: 'secondary', onclick: () => { state.loginRole = 'validator'; state.error = null; render(); } }, 'Валидатор ✅')
-      )
-    );
-  }
-
-  const isValidatorLogin = state.loginRole === 'validator';
-  const username = h('input', { placeholder: 'Логин', value: isValidatorLogin ? 'validator' : 'admin' });
-  const password = h('input', { type: 'password', placeholder: 'Пароль', value: isValidatorLogin ? '' : 'admin' });
+  // Single login form. Role (admin/validator) is determined server-side from
+  // the username. Validator usernames are now arbitrary (set by their admin),
+  // so no role chooser / prefilled credentials make sense anymore.
+  const username = h('input', { placeholder: 'Логин' });
+  const password = h('input', { type: 'password', placeholder: 'Пароль' });
   const submit = async () => {
     try {
-      const res = await api('/api/login', { method: 'POST', body: { username: username.value, password: password.value } });
-      state.user = { username: res.username, role: res.role };
-      state.loginRole = null;
-      if (res.role === 'validator') {
-        setMode('validator');
-        await loadPendingTasks();
-        go('pending');
-      } else {
-        await loadKids();
-        go('kids');
-      }
+      await api('/api/login', { method: 'POST', body: { username: username.value, password: password.value } });
+      clearTgSuppression();
+      // Auto-bind Telegram only when no user owns this tg_user_id yet
+      // (tg-auth returns action='bound' in that case).
+      if (tgInitData) await tryTelegramAuth();
+      await enterAfterLogin();
     } catch (e) { showError(e); }
   };
   username.onkeydown = password.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
 
+  // Explicit "Sign in with Telegram" — bypasses the suppression flag set by
+  // the Logout button, so the user can come straight back into their TG
+  // account without closing & reopening the Mini App.
+  const tgLogin = tgInitData && h('button', {
+    class: 'tg-primary',
+    style: 'margin-bottom: 10px; width: 100%',
+    onclick: async () => {
+      clearTgSuppression();
+      try {
+        const r = await tryTelegramAuth();
+        if (r && (r.action === 'login' || r.action === 'registered')) {
+          await enterAfterLogin();
+        } else {
+          state.error = 'Не удалось войти через Telegram';
+          render();
+        }
+      } catch (e) { showError(e); }
+    }
+  }, 'Войти через Telegram');
+
   return h('div', { class: 'card' },
     h('h1', {}, 'Happy Kids'),
-    h('p', { class: 'muted' }, isValidatorLogin ? 'Вход для валидатора' : 'Вход для родителя'),
+    h('p', { class: 'muted' },
+      tgInitData
+        ? 'Родители — нажмите «Войти через Telegram». Валидаторам — введите логин и пароль, выданные родителем.'
+        : 'Родители заходят через Telegram. Валидаторам — введите логин и пароль, выданные родителем.'),
+    tgLogin,
     h('div', { style: 'margin-bottom: 8px' }, username),
     h('div', { style: 'margin-bottom: 8px' }, password),
     state.error && h('div', { class: 'error' }, state.error),
     h('div', { class: 'row' },
-      // Hide "Назад" when the chooser was auto-skipped (no kids yet) —
-      // there's nothing to go back to.
-      !state.loginNoChoice && h('button', { class: 'secondary', onclick: () => {
-        state.loginRole = null;
-        state.error = null;
-        render();
-      } }, '‹ Назад'),
       h('button', { onclick: submit }, 'Войти')
     )
   );
@@ -187,24 +240,15 @@ function renderModeToggle() {
   // an exit button when in validator mode, and a "to validator" button in view.
   const validatorOnly = sessionIsValidator();
 
-  if (isAdmin() || isValidator()) {
+  // In validator UI mode there's no useful "view" page to fall back to —
+  // hide the toggle entirely. Logout button next to it covers the only
+  // meaningful action.
+  if (isValidator()) return null;
+  if (isAdmin()) {
     return h('button', {
       class: 'ghost',
       onclick: async () => {
         setMode('view');
-        // If we were on the validator page (admin session in validator mode),
-        // bounce back to the kids list. Validator-only sessions have no kids
-        // list to return to and must log out instead.
-        if (state.route === 'pending') {
-          if (sessionIsValidator()) {
-            await api('/api/logout', { method: 'POST' });
-            state.user = null;
-            await bootToLogin();
-          } else {
-            await loadKids();
-            go('kids');
-          }
-        }
       },
       title: 'Переключить режим'
     }, 'Просмотр 👀');
@@ -215,6 +259,12 @@ function renderModeToggle() {
     buttons.push(h('button', {
       class: 'ghost',
       onclick: () => {
+        // No PIN set yet → switch in one click. The user can set a PIN later
+        // in Settings to gate the switch.
+        if (!state.user || !state.user.has_pin) {
+          setMode('admin');
+          return;
+        }
         state.showModeAuth = true;
         state.modeAuthTarget = 'admin';
         state.modeAuthError = '';
@@ -242,16 +292,21 @@ function renderModeAuthModal() {
   if (!state.showModeAuth) return null;
   const target = state.modeAuthTarget || 'admin';
   const isValidatorTarget = target === 'validator';
-  const defaultUser = isValidatorTarget ? 'validator' : 'admin';
-  const uInput = h('input', { placeholder: 'Логин', value: defaultUser });
-  const pInput = h('input', { type: 'password', placeholder: 'Пароль' });
+
+  // Admin target: PIN-only (no username). The session is already an admin —
+  // we only gate the UI switch behind the parent's secret PIN.
+  // Validator target: username + password (validator creds set by admin).
+  const pinInput = isValidatorTarget ? null : h('input', { type: 'password', inputmode: 'numeric', placeholder: 'PIN', autocomplete: 'off' });
+  const uInput = isValidatorTarget ? h('input', { placeholder: 'Логин' }) : null;
+  const pInput = isValidatorTarget ? h('input', { type: 'password', placeholder: 'Пароль' }) : null;
+
   const submit = async () => {
     try {
-      const endpoint = isValidatorTarget ? '/api/verify-validator' : '/api/verify-admin';
-      await api(endpoint, {
-        method: 'POST',
-        body: { username: uInput.value, password: pInput.value }
-      });
+      if (isValidatorTarget) {
+        await api('/api/verify-validator', { method: 'POST', body: { username: uInput.value, password: pInput.value } });
+      } else {
+        await api('/api/verify-pin', { method: 'POST', body: { pin: pinInput.value } });
+      }
       state.showModeAuth = false;
       state.modeAuthError = '';
       if (isValidatorTarget) {
@@ -262,11 +317,13 @@ function renderModeAuthModal() {
         setMode('admin');
       }
     } catch (e) {
-      state.modeAuthError = 'Неверный логин или пароль';
+      state.modeAuthError = isValidatorTarget ? 'Неверный логин или пароль' : 'Неверный PIN';
       render();
     }
   };
-  uInput.onkeydown = pInput.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  if (pinInput) pinInput.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  if (uInput) uInput.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  if (pInput) pInput.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
 
   return h('div', { class: 'modal-overlay', onclick: (e) => {
     if (e.target.classList.contains('modal-overlay')) {
@@ -276,13 +333,14 @@ function renderModeAuthModal() {
   } },
     h('div', { class: 'modal tg-auth' },
       h('div', { class: 'tg-auth-icon' }, isValidatorTarget ? '✅' : '🔑'),
-      h('h2', { class: 'tg-auth-title' }, isValidatorTarget ? 'Вход валидатора' : 'Вход'),
+      h('h2', { class: 'tg-auth-title' }, isValidatorTarget ? 'Вход валидатора' : 'PIN родителя'),
       h('p', { class: 'tg-auth-sub' },
         isValidatorTarget
           ? 'Введите логин и пароль валидатора, чтобы подтверждать выполнение заданий.'
-          : 'Введите логин и пароль родителя, чтобы перейти в режим редактирования.'),
-      h('div', { class: 'tg-field' }, uInput),
-      h('div', { class: 'tg-field' }, pInput),
+          : 'Введите PIN родителя, чтобы перейти в режим редактирования.'),
+      isValidatorTarget
+        ? [h('div', { class: 'tg-field' }, uInput), h('div', { class: 'tg-field' }, pInput)]
+        : h('div', { class: 'tg-field' }, pinInput),
       state.modeAuthError && h('div', { class: 'error', style: 'text-align: center' }, state.modeAuthError),
       h('button', { class: 'tg-primary', onclick: submit }, 'Войти'),
       h('button', { class: 'tg-link', onclick: () => {
@@ -352,11 +410,19 @@ function renderKidsList() {
 
   return h('div', {},
     h('div', { class: 'header' },
-      h('h1', {}, 'Дети'),
+      h('div', { style: 'flex: 1; min-width: 0' },
+        h('h1', { style: 'margin: 0' }, 'Дети'),
+        renderFamilySwitcher()
+      ),
       h('div', {},
         renderModeToggle(),
-        isAdmin() && h('button', { class: 'ghost', onclick: () => go('settings') }, 'Настройки'),
-        isAdmin() && h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
+        isAdmin() && h('button', { class: 'ghost', onclick: async () => {
+          try { await loadValidators(); } catch (e) { /* ignore */ }
+          try { await loadInvites(); } catch (e) { /* ignore */ }
+          state.inviteCopiedAt = 0;
+          go('settings');
+        } }, 'Настройки'),
+        isAdmin() && h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); suppressTgAutoLogin(); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
       )
     ),
     isAdmin() && (state.showAddKidForm
@@ -807,30 +873,25 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
         )
       );
     } else if (state.showUnlockForm) {
-      const uInput = h('input', { placeholder: 'Логин', value: 'admin' });
-      const pInput = h('input', { type: 'password', placeholder: 'Пароль' });
+      const pinInput = h('input', { type: 'password', inputmode: 'numeric', placeholder: 'PIN', autocomplete: 'off' });
       const submitUnlock = async () => {
         try {
-          await api('/api/verify-admin', {
-            method: 'POST',
-            body: { username: uInput.value, password: pInput.value }
-          });
+          await api('/api/verify-pin', { method: 'POST', body: { pin: pinInput.value } });
           state.rewardUnlocked = true;
           state.showUnlockForm = false;
           state.unlockError = '';
           render();
         } catch (e) {
-          state.unlockError = 'Неверный логин или пароль';
+          state.unlockError = 'Неверный PIN';
           render();
         }
       };
-      uInput.onkeydown = pInput.onkeydown = (e) => { if (e.key === 'Enter') submitUnlock(); };
+      pinInput.onkeydown = (e) => { if (e.key === 'Enter') submitUnlock(); };
       inner.push(
         h('div', { class: 'reward unlock-form' },
           h('div', { style: 'font-size: 32px' }, '🔐'),
-          h('div', { style: 'font-weight: 600; margin-bottom: 12px' }, 'Войдите, чтобы увидеть награду'),
-          h('div', { class: 'tg-field' }, uInput),
-          h('div', { class: 'tg-field' }, pInput),
+          h('div', { style: 'font-weight: 600; margin-bottom: 12px' }, 'Введите PIN родителя'),
+          h('div', { class: 'tg-field' }, pinInput),
           state.unlockError && h('div', { class: 'error', style: 'text-align: center' }, state.unlockError),
           h('div', { class: 'row' },
             h('button', { class: 'secondary', onclick: () => {
@@ -843,12 +904,20 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
         )
       );
     } else {
+      // No PIN set → reveal in one click (no unlock form). Once a PIN is set
+      // in Settings, the PIN form gates the reveal.
+      const hasPin = state.user && state.user.has_pin;
       inner.push(
         h('div', { class: 'reward' },
           h('div', { style: 'font-size: 40px' }, '🎁'),
           h('h3', {}, 'Все задания выполнены!'),
           h('div', { class: 'muted', style: 'margin-bottom: 10px' }, 'Награду открывает родитель'),
           h('button', { onclick: () => {
+            if (!hasPin) {
+              state.rewardUnlocked = true;
+              render();
+              return;
+            }
             state.showUnlockForm = true;
             state.unlockError = '';
             render();
@@ -1008,29 +1077,293 @@ function renderKid() {
   );
 }
 
+async function loadValidators() {
+  state.validators = await api('/api/validators');
+}
+
+// Manual creation of a validator account by login/password (legacy flow,
+// useful for non-Telegram or browser-only validators).
+function renderValidatorAddBlock() {
+  const newUser = h('input', { placeholder: 'Логин валидатора' });
+  const newPass = h('input', { type: 'password', placeholder: 'Пароль' });
+  return h('div', { class: 'card' },
+    h('div', { class: 'section-title' }, 'Добавить валидатора по логину и паролю'),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
+      'Альтернатива приглашению через Telegram: создайте аккаунт с логином/паролем и передайте их валидатору. Подходит, если валидатор будет заходить из браузера.'),
+    h('div', { class: 'row', style: 'margin-bottom: 8px' }, newUser, newPass),
+    h('button', {
+      onclick: async () => {
+        if (!newUser.value.trim() || !newPass.value) return;
+        try {
+          await api('/api/validators', { method: 'POST', body: { username: newUser.value.trim(), password: newPass.value } });
+          newUser.value = ''; newPass.value = '';
+          await loadValidators();
+          render();
+        } catch (e) { showError(e); }
+      }
+    }, 'Добавить')
+  );
+}
+
+// Combined list of validators in the family — both legacy login/password
+// accounts and TG-invited memberships are surfaced here for the admin.
+function renderValidatorsListBlock() {
+  const list = state.validators || [];
+  return h('div', { class: 'card' },
+    h('div', { class: 'section-title' }, 'Валидаторы семьи'),
+    list.length === 0
+      ? h('div', { class: 'empty' }, 'Пока нет валидаторов.')
+      : h('div', {}, ...list.map(v => h('div', { class: 'kid-row' },
+          h('div', { style: 'flex: 1' },
+            h('div', { style: 'font-weight: 600' }, v.username),
+            h('div', { class: 'kid-meta' }, v.tg_linked ? 'Telegram привязан' : 'Telegram не привязан')
+          ),
+          h('button', {
+            class: 'icon-btn',
+            title: 'Сменить пароль',
+            onclick: async () => {
+              const p = prompt(`Новый пароль для ${v.username}:`);
+              if (!p) return;
+              try {
+                await api(`/api/validators/${v.id}/password`, { method: 'POST', body: { password: p } });
+                alert('Пароль изменён');
+              } catch (e) { showError(e); }
+            }
+          }, '🔑'),
+          h('button', {
+            class: 'icon-btn danger',
+            title: 'Удалить',
+            onclick: async () => {
+              if (!confirm(`Удалить валидатора ${v.username}?`)) return;
+              try {
+                await api(`/api/validators/${v.id}`, { method: 'DELETE' });
+                await loadValidators();
+                render();
+              } catch (e) { showError(e); }
+            }
+          }, '🗑')
+        )))
+  );
+}
+
+async function loadInvites() {
+  state.invites = await api('/api/invites');
+}
+
+function renderInvitesBlock() {
+  const list = state.invites || [];
+  // Share helpers — copy to clipboard, or open Telegram share picker.
+  const shareViaTelegram = (url) => {
+    const msg = encodeURIComponent('Приглашение в Happy Kids: подтверждайте выполнение заданий моего ребёнка');
+    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${msg}`;
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(shareUrl);
+    else window.open(shareUrl, '_blank');
+  };
+  const copyToClipboard = async (url) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      state.inviteCopiedAt = Date.now();
+      render();
+    } catch {
+      // Fallback: select a temp textarea
+      const ta = document.createElement('textarea');
+      ta.value = url; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); state.inviteCopiedAt = Date.now(); render(); }
+      finally { document.body.removeChild(ta); }
+    }
+  };
+
+  return h('div', { class: 'card' },
+    h('div', { class: 'section-title' }, 'Пригласить валидатора через Telegram'),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
+      'Создайте ссылку и отправьте её любому пользователю Telegram. Открыв её, он станет валидатором в вашей семье. Ссылка постоянная и многоразовая — можно пригласить нескольких людей по одной ссылке.'),
+    list.length === 0
+      ? h('div', { class: 'empty' }, 'Пока нет приглашений.')
+      : h('div', {}, ...list.map(inv => h('div', { class: 'kid-row', style: 'flex-wrap: wrap; gap: 6px' },
+          h('div', { style: 'flex: 1; min-width: 0' },
+            h('div', { style: 'font-family: monospace; font-size: 12px; word-break: break-all' }, inv.url || `(нет URL: бот не запущен)`),
+            h('div', { class: 'kid-meta' }, 'Создано: ' + (inv.created_at || ''))
+          ),
+          inv.url && h('button', { class: 'secondary', onclick: () => copyToClipboard(inv.url) }, 'Копировать'),
+          inv.url && h('button', { class: 'secondary', onclick: () => shareViaTelegram(inv.url) }, 'Поделиться'),
+          h('button', {
+            class: 'icon-btn danger',
+            title: 'Отозвать',
+            onclick: async () => {
+              if (!confirm('Отозвать приглашение? После отзыва ссылка перестанет работать.')) return;
+              try {
+                await api(`/api/invites/${inv.id}`, { method: 'DELETE' });
+                await loadInvites();
+                render();
+              } catch (e) { showError(e); }
+            }
+          }, '🗑')
+        ))),
+    state.inviteCopiedAt && h('div', { class: 'flash-success' }, 'Ссылка скопирована'),
+    h('button', {
+      style: 'margin-top: 10px',
+      onclick: async () => {
+        try {
+          await api('/api/invites', { method: 'POST' });
+          await loadInvites();
+          render();
+        } catch (e) { showError(e); }
+      }
+    }, 'Создать ссылку-приглашение')
+  );
+}
+
+function renderTelegramBlock() {
+  // Only meaningful when running inside Telegram. Outside (browser), the
+  // user can't bind anyway; we hide the block so it doesn't confuse.
+  if (!tgInitData) {
+    return h('div', { class: 'card' },
+      h('div', { class: 'section-title' }, 'Telegram'),
+      h('p', { class: 'muted' },
+        state.user && state.user.tg_linked
+          ? 'Аккаунт уже привязан к Telegram.'
+          : 'Откройте приложение через Telegram, чтобы привязать аккаунт.')
+    );
+  }
+  if (state.user && state.user.tg_linked) {
+    return h('div', { class: 'card' },
+      h('div', { class: 'section-title' }, 'Telegram'),
+      h('p', { class: 'muted' }, '✅ Аккаунт привязан. В следующий раз вход будет автоматическим.')
+    );
+  }
+  return h('div', { class: 'card' },
+    h('div', { class: 'section-title' }, 'Telegram'),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
+      'Привяжите этот аккаунт к Telegram, чтобы входить без пароля.'),
+    state.tgLinkError && h('div', { class: 'error' }, state.tgLinkError),
+    h('button', {
+      onclick: async () => {
+        const r = await tryTelegramAuth();
+        if (r && r.action === 'bound') {
+          state.user.tg_linked = true;
+          state.tgLinkError = '';
+          alert('Telegram успешно привязан');
+        } else if (r && r.action === 'login') {
+          // Already linked elsewhere (shouldn't normally happen here).
+          state.user.tg_linked = true;
+        } else {
+          state.tgLinkError = 'Не удалось привязать. Возможно, этот Telegram уже занят другим аккаунтом.';
+        }
+        render();
+      }
+    }, 'Привязать Telegram')
+  );
+}
+
+// Brief inline success message; visually fades via CSS animation. We only
+// clear the state flag after the animation finishes — without triggering a
+// re-render, so the user's focus inside the form is preserved.
+let _pinFlashTimer = null;
+function flashPinSuccess(msg) {
+  state.pinSuccess = msg;
+  state.pinError = '';
+  if (_pinFlashTimer) clearTimeout(_pinFlashTimer);
+  _pinFlashTimer = setTimeout(() => {
+    state.pinSuccess = '';
+    _pinFlashTimer = null;
+  }, 2500);
+}
+
+// Map server-side English error messages (returned in JSON {error: ...})
+// to user-facing Russian text.
+function pinErrorRu(msg) {
+  const m = (msg || '').toLowerCase();
+  if (m.includes('wrong old pin')) return 'Неверный старый PIN';
+  if (m.includes('wrong pin')) return 'Неверный PIN';
+  if (m.includes('pin must be')) return 'PIN должен содержать минимум 4 цифры';
+  if (m.includes('pin not set')) return 'PIN не задан';
+  return msg || 'Не удалось выполнить операцию';
+}
+
+function renderPinBlock() {
+  const hasPin = state.user && state.user.has_pin;
+  const deleteOpen = !!state.pinDeleteOpen;
+  const oldPin = h('input', { type: 'password', inputmode: 'numeric', placeholder: 'Старый PIN', autocomplete: 'off' });
+  const newPin = h('input', { type: 'password', inputmode: 'numeric', placeholder: hasPin ? 'Новый PIN' : 'PIN (минимум 4 цифры)', autocomplete: 'off' });
+  const deletePin = h('input', { type: 'password', inputmode: 'numeric', placeholder: 'Текущий PIN', autocomplete: 'off' });
+
+  // While the delete form is open, hide the add/change form to keep focus
+  // and intent unambiguous.
+  return h('div', { class: 'card' },
+    h('div', { class: 'section-title' }, 'PIN родителя'),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
+      hasPin
+        ? 'PIN защищает переход в режим редактирования и открытие награды.'
+        : 'PIN не задан. Сейчас переход в режим редактирования происходит в один клик. Задайте PIN, чтобы защитить эти действия.'),
+    !deleteOpen && hasPin && h('div', { style: 'margin-bottom: 8px' }, oldPin),
+    !deleteOpen && h('div', { style: 'margin-bottom: 8px' }, newPin),
+    state.pinError && h('div', { class: 'error' }, state.pinError),
+    state.pinSuccess && h('div', { class: 'flash-success' }, state.pinSuccess),
+    !deleteOpen && h('div', { class: 'row' },
+      h('button', {
+        onclick: async () => {
+          try {
+            const body = { pin: newPin.value };
+            if (hasPin) body.oldPin = oldPin.value;
+            await api('/api/admin-pin', { method: 'POST', body });
+            oldPin.value = ''; newPin.value = '';
+            await refreshUser();
+            flashPinSuccess(hasPin ? 'PIN изменён' : 'PIN установлен');
+            render();
+          } catch (e) {
+            state.pinError = pinErrorRu(e.message);
+            render();
+          }
+        }
+      }, hasPin ? 'Изменить PIN' : 'Установить PIN'),
+      hasPin && h('button', {
+        class: 'secondary',
+        onclick: () => {
+          state.pinDeleteOpen = true;
+          state.pinError = '';
+          render();
+        }
+      }, 'Удалить PIN')
+    ),
+    // Inline confirmation for delete — appears only when "Удалить PIN" was
+    // clicked. Avoids native prompt() (broken focus inside Telegram WebApp).
+    hasPin && deleteOpen && h('div', {},
+      h('div', { class: 'muted', style: 'margin-bottom: 8px' }, 'Введите текущий PIN, чтобы подтвердить удаление:'),
+      h('div', { style: 'margin-bottom: 8px' }, deletePin),
+      h('div', { class: 'row' },
+        h('button', { class: 'secondary', onclick: () => {
+          state.pinDeleteOpen = false;
+          state.pinError = '';
+          render();
+        } }, 'Отмена'),
+        h('button', { class: 'danger', onclick: async () => {
+          try {
+            await api('/api/admin-pin', { method: 'DELETE', body: { pin: deletePin.value } });
+            state.pinDeleteOpen = false;
+            await refreshUser();
+            flashPinSuccess('PIN удалён');
+            render();
+          } catch (e) {
+            state.pinError = pinErrorRu(e.message);
+            render();
+          }
+        } }, 'Удалить')
+      )
+    )
+  );
+}
+
 function renderSettings() {
-  const oldP = h('input', { type: 'password', placeholder: 'Старый пароль' });
-  const newP = h('input', { type: 'password', placeholder: 'Новый пароль' });
   return h('div', {},
     h('div', { class: 'header' },
       h('button', { class: 'ghost', onclick: () => go('kids') }, '‹ Назад'),
       h('h1', {}, 'Настройки')
     ),
-    h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, 'Сменить пароль'),
-      h('div', { style: 'margin-bottom: 8px' }, oldP),
-      h('div', { style: 'margin-bottom: 8px' }, newP),
-      state.error && h('div', { class: 'error' }, state.error),
-      h('button', {
-        onclick: async () => {
-          try {
-            await api('/api/change-password', { method: 'POST', body: { oldPassword: oldP.value, newPassword: newP.value } });
-            alert('Пароль изменён');
-            oldP.value = ''; newP.value = '';
-          } catch (e) { showError(e); }
-        }
-      }, 'Сохранить')
-    )
+    renderPinBlock(),
+    renderTelegramBlock(),
+    renderInvitesBlock(),
+    renderValidatorAddBlock(),
+    renderValidatorsListBlock()
   );
 }
 
@@ -1045,10 +1378,13 @@ function renderPending() {
 
   return h('div', {},
     h('div', { class: 'header' },
-      h('h1', {}, 'На проверке'),
+      h('div', { style: 'flex: 1; min-width: 0' },
+        h('h1', { style: 'margin: 0' }, 'На проверке'),
+        renderFamilySwitcher()
+      ),
       h('div', {},
         renderModeToggle(),
-        h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
+        h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); suppressTgAutoLogin(); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
       )
     ),
     items.length === 0
@@ -1104,39 +1440,101 @@ function render() {
 
 // ---- Boot ----
 async function bootToLogin() {
-  try {
-    const probe = await api('/api/has-kids');
-    if (!probe.has_kids) {
-      // Fresh install — go straight to admin login, hide the "back" button.
-      state.loginRole = 'admin';
-      state.loginNoChoice = true;
-    } else {
-      state.loginRole = null;
-      state.loginNoChoice = false;
-    }
-  } catch (e) {
-    state.loginRole = null;
-    state.loginNoChoice = false;
-  }
   go('login');
+}
+
+async function refreshUser() {
+  const me = await api('/api/me');
+  if (me.authenticated) {
+    state.user = {
+      username: me.username,
+      role: me.role,                       // primary role (admin / legacy validator)
+      tg_linked: !!me.tg_linked,
+      has_pin: !!me.has_pin,
+      context: me.context || null,        // { parent_id, parent_username, role, is_self }
+      can_switch_context: !!me.can_switch_context
+    };
+    // Load the list of available families so the header switcher has data.
+    if (me.can_switch_context) {
+      try { state.families = await api('/api/my-families'); }
+      catch { state.families = []; }
+    } else {
+      state.families = [];
+    }
+  }
+  return me;
+}
+
+// Route based on the *current context's* role, not the user's primary role.
+async function routeForCurrentContext() {
+  const ctx = state.user && state.user.context;
+  if (ctx && ctx.role === 'validator') {
+    setMode('validator');
+    await loadPendingTasks();
+    go('pending');
+  } else {
+    setMode('view');
+    await loadKids();
+    go('kids');
+  }
+}
+
+async function enterAfterLogin() {
+  const me = await refreshUser();
+  if (!me.authenticated) return bootToLogin();
+  // If we arrived via an invite link, redeem it now (idempotent) and switch
+  // into the new family's validator context.
+  const inviteToken = readInviteFromUrl();
+  if (inviteToken) {
+    try {
+      const r = await api('/api/invites/redeem', { method: 'POST', body: { token: inviteToken } });
+      await api('/api/switch-context', { method: 'POST', body: { parent_id: r.parent_id } });
+      // Refresh user state so context info reflects the switch.
+      await refreshUser();
+    } catch (e) {
+      // Show the error but continue routing so the user isn't stuck.
+      state.error = 'Не удалось принять приглашение: ' + (e.message || '');
+    } finally {
+      // Strip ?invite=... from the URL so a refresh doesn't re-trigger.
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('invite');
+        window.history.replaceState({}, '', url.toString());
+      } catch {}
+    }
+  }
+  await routeForCurrentContext();
+}
+
+async function switchFamilyContext(parentId) {
+  await api('/api/switch-context', { method: 'POST', body: { parent_id: parentId } });
+  await refreshUser();
+  await routeForCurrentContext();
 }
 
 (async () => {
   try {
+    // 1. Existing session?
     const me = await api('/api/me');
     if (me.authenticated) {
-      state.user = { username: me.username, role: me.role };
-      if (me.role === 'validator') {
-        setMode('validator');
-        await loadPendingTasks();
-        go('pending');
-      } else {
-        await loadKids();
-        go('kids');
-      }
-    } else {
-      await bootToLogin();
+      await enterAfterLogin();
+      return;
     }
+    // 2. Try Telegram-based auto-login (only if running inside Telegram and
+    //    this Telegram id is already bound to some user). Suppressed after an
+    //    explicit logout so the user can sign in under a different account.
+    if (tgInitData && !tgAutoLoginSuppressed()) {
+      const r = await tryTelegramAuth();
+      // 'login' — existing user signed in; 'registered' — fresh admin account
+      // auto-created for this Telegram user. Both end with an authenticated
+      // session and tg_linked=true.
+      if (r && (r.action === 'login' || r.action === 'registered')) {
+        await enterAfterLogin();
+        return;
+      }
+    }
+    // 3. Fall through to login form.
+    await bootToLogin();
   } catch (e) {
     await bootToLogin();
   }
