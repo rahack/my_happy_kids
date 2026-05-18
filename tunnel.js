@@ -3,8 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const https = require('https');
 
-const URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
-const URL_SERVEO = /https:\/\/[a-zA-Z0-9-]+\.serveousercontent\.com/i;
+const URL_RE     = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
+const URL_PINGGY = /https:\/\/[a-z0-9-]+\.run\.pinggy-free\.link/i;
 const ANSI_RE = /\x1B\[[0-9;]*m/g;
 
 function resolveCloudflaredPath() {
@@ -67,19 +67,18 @@ async function tryCloudflared(port) {
   return spawnTunnel(bin, ['tunnel', '--no-autoupdate', '--url', `http://localhost:${port}`], URL_RE);
 }
 
-async function tryServeo(port) {
-  console.log('[tunnel] trying serveo.net...');
+async function tryPinggy(port) {
+  console.log('[tunnel] trying pinggy.io...');
   const url = await spawnTunnel(
     'ssh',
-    ['-o', 'StrictHostKeyChecking=no', '-o', 'ServerAliveInterval=30',
-     '-R', `80:localhost:${port}`, 'serveo.net'],
-    URL_SERVEO
+    ['-p', '443', '-o', 'StrictHostKeyChecking=no', '-o', 'ServerAliveInterval=30',
+     '-R', `0:localhost:${port}`, 'a.pinggy.io'],
+    URL_PINGGY
   );
-  console.log(`[tunnel] serveo URL: ${url}`);
-  // Give serveo a moment to fully establish routing
+  console.log(`[tunnel] pinggy URL: ${url}`);
   await new Promise(r => setTimeout(r, 2000));
   const ok = await pingUrl(url);
-  if (!ok) throw new Error('serveo URL returned 502/503');
+  if (!ok) throw new Error('pinggy URL returned 502/503');
   return url;
 }
 
@@ -103,10 +102,10 @@ function startTunnel(port) {
   const urlPromise = tryCloudflared(port)
     .catch(err => {
       console.warn(`[tunnel] cloudflared failed: ${err.message}`);
-      return tryServeo(port);
+      return tryPinggy(port);
     })
     .catch(err => {
-      console.warn(`[tunnel] serveo failed: ${err.message}`);
+      console.warn(`[tunnel] pinggy failed: ${err.message}`);
       return tryLocaltunnel(port);
     })
     .catch(err => {

@@ -13,6 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 // Accept base64-encoded photos in the kid edit form
 app.use(express.json({ limit: '2mb' }));
+app.use((req, res, next) => { res.set('Cache-Control', 'no-store, must-revalidate'); next(); });
 app.use(session({
   secret: process.env.SESSION_SECRET || 'happy-kids-dev-secret',
   resave: false,
@@ -249,7 +250,7 @@ app.post('/api/logout', (req, res) => {
 
 app.get('/api/me', (req, res) => {
   if (!req.session.userId) return res.json({ authenticated: false });
-  const u = db.prepare('SELECT id, username, role, parent_id, tg_user_id, admin_pin_hash FROM users WHERE id = ?').get(req.session.userId);
+  const u = db.prepare('SELECT id, username, role, parent_id, tg_user_id, admin_pin_hash, family_name FROM users WHERE id = ?').get(req.session.userId);
   if (!u) {
     req.session.destroy(() => {});
     return res.json({ authenticated: false });
@@ -265,7 +266,7 @@ app.get('/api/me', (req, res) => {
     }
   }
   // Context info: name of the family the user is currently acting in.
-  const contextParent = db.prepare('SELECT id, username FROM users WHERE id = ?').get(req.session.contextParentId);
+  const contextParent = db.prepare('SELECT id, username, family_name FROM users WHERE id = ?').get(req.session.contextParentId);
   // Does the user have ≥2 contexts (i.e. can they switch)? Only relevant for
   // admins — legacy validators always have exactly one context.
   let contextCount = 1;
@@ -279,14 +280,26 @@ app.get('/api/me', (req, res) => {
     role: u.role,
     tg_linked: !!u.tg_user_id,
     has_pin: !!u.admin_pin_hash,
+    family_name: u.family_name || null,
     context: {
       parent_id: req.session.contextParentId,
       parent_username: contextParent ? contextParent.username : null,
+      parent_family_name: contextParent ? (contextParent.family_name || null) : null,
       role: req.session.contextRole,
       is_self: req.session.contextParentId === u.id
     },
     can_switch_context: contextCount > 1
   });
+});
+
+// ---- Family name ----
+app.post('/api/family-name', requireAdmin, (req, res) => {
+  const { name } = req.body || {};
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
+  // Only allow editing own family (not when acting as validator in another family).
+  if (ownerOf(req) !== req.session.userId) return res.status(403).json({ error: 'can only edit own family name' });
+  db.prepare('UPDATE users SET family_name = ? WHERE id = ?').run(String(name).trim(), req.session.userId);
+  res.json({ ok: true });
 });
 
 // ---- Admin PIN ----
@@ -426,23 +439,23 @@ function buildInviteUrl(token) {
 // plus each invited-into family. For legacy validators: just their one
 // family (no switching possible).
 app.get('/api/my-families', requireAuth, (req, res) => {
-  const me = db.prepare('SELECT id, username, role, parent_id FROM users WHERE id = ?').get(req.session.userId);
+  const me = db.prepare('SELECT id, username, role, parent_id, family_name FROM users WHERE id = ?').get(req.session.userId);
   if (!me) return res.status(401).json({ error: 'unauthorized' });
   const contexts = [];
   if (me.role === 'admin') {
-    contexts.push({ parent_id: me.id, parent_username: me.username, role: 'admin', is_self: true });
+    contexts.push({ parent_id: me.id, parent_username: me.username, family_name: me.family_name || null, role: 'admin', is_self: true });
     const memberships = db.prepare(`
-      SELECT m.parent_id, u.username AS parent_username
+      SELECT m.parent_id, u.username AS parent_username, u.family_name
       FROM memberships m JOIN users u ON u.id = m.parent_id
       WHERE m.user_id = ?
       ORDER BY u.username
     `).all(me.id);
     for (const m of memberships) {
-      contexts.push({ parent_id: m.parent_id, parent_username: m.parent_username, role: 'validator', is_self: false });
+      contexts.push({ parent_id: m.parent_id, parent_username: m.parent_username, family_name: m.family_name || null, role: 'validator', is_self: false });
     }
   } else {
-    const p = db.prepare('SELECT id, username FROM users WHERE id = ?').get(me.parent_id);
-    if (p) contexts.push({ parent_id: p.id, parent_username: p.username, role: 'validator', is_self: false });
+    const p = db.prepare('SELECT id, username, family_name FROM users WHERE id = ?').get(me.parent_id);
+    if (p) contexts.push({ parent_id: p.id, parent_username: p.username, family_name: p.family_name || null, role: 'validator', is_self: false });
   }
   res.json(contexts);
 });
@@ -664,7 +677,8 @@ app.post('/api/tasks/:id/reject', requireAuth, (req, res) => {
 app.get('/api/pending-tasks', requireAuth, (req, res) => {
   const ownerId = ownerOf(req);
   const rows = db.prepare(`
-    SELECT t.id, t.title, t.date, t.kid_id, k.name AS kid_name, k.photo AS kid_photo
+    SELECT t.id, t.title, t.date, t.kid_id,
+           k.name AS kid_name, k.photo AS kid_photo, k.age AS kid_age, k.gender AS kid_gender
     FROM tasks t
     JOIN kids k ON k.id = t.kid_id
     WHERE t.pending = 1 AND t.owner_id = ?
@@ -715,10 +729,6 @@ app.post('/api/rewards/:id/claim', requireAdmin, (req, res) => {
 });
 
 // ---- Static ----
-app.use((req, res, next) => {
-  res.set('Cache-Control', 'no-store, must-revalidate');
-  next();
-});
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.listen(PORT, async () => {
@@ -741,5 +751,11 @@ app.listen(PORT, async () => {
     console.log('[tunnel] disabled (NO_TUNNEL=1)');
   }
 
-  startBot().catch(err => console.error('[bot] failed to start:', err.message));
+  const getInviteInfo = (token) => {
+    const row = db.prepare(
+      'SELECT u.family_name FROM invites i JOIN users u ON u.id = i.parent_id WHERE i.token = ?'
+    ).get(token);
+    return row || null;
+  };
+  startBot({ getInviteInfo }).catch(err => console.error('[bot] failed to start:', err.message));
 });

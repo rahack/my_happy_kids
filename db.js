@@ -99,6 +99,7 @@ function ensureColumn(table, column, definition) {
 // Admin-only PIN that gates the view → admin UI mode switch. Independent of
 // the account password (which TG-registered admins never know — it's random).
 ensureColumn('users', 'admin_pin_hash', 'TEXT');
+ensureColumn('users', 'family_name', 'TEXT');
 
 // No default seed. Admin accounts are auto-created by /api/tg-auth on first
 // Telegram login (each TG user = own tenant). Validators are created inside

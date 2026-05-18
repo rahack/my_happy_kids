@@ -3,7 +3,7 @@ const { Telegraf, Markup } = require('telegraf');
 let _botUsername = '';
 function getBotUsername() { return _botUsername; }
 
-async function startBot() {
+async function startBot({ getInviteInfo } = {}) {
   const token = process.env.TELEGRAM_TOKEN;
   if (!token) {
     console.warn('[bot] TELEGRAM_TOKEN is not set; bot is disabled');
@@ -38,8 +38,11 @@ async function startBot() {
     if (payload && payload.startsWith('inv_')) {
       // Invite flow: open Mini App with the token in the URL.
       const inviteUrl = withInvite(webAppUrl, payload);
+      const invToken = payload.slice('inv_'.length);
+      const info = getInviteInfo && getInviteInfo(invToken);
+      const familyLabel = info && info.family_name ? `«${info.family_name}»` : 'Happy Kids';
       await ctx.reply(
-        'Вас пригласили в семью Happy Kids в качестве валидатора. Откройте приложение, чтобы принять приглашение.',
+        `Вас пригласили в семью ${familyLabel} в качестве валидатора. Откройте приложение, чтобы принять приглашение.`,
         Markup.inlineKeyboard([[Markup.button.webApp('Принять приглашение', inviteUrl)]])
       );
       return;

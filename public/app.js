@@ -93,6 +93,9 @@ function startPolling(fn, ms = 5000) {
   stopPolling();
   const run = async () => {
     if (document.visibilityState === 'hidden' || _polling) return;
+    // Don't re-render while user is typing — it would lose focus and scroll.
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     _polling = true;
     try { await fn(); } catch (_) { /* ignore poll errors */ }
     finally { _polling = false; }
@@ -102,6 +105,38 @@ function startPolling(fn, ms = 5000) {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && _pollTimer) run();
   }, { once: true });
+}
+
+// ---- Family name polling (keeps switcher labels fresh without full re-render) ----
+let _familyNamePollTimer = null;
+
+function stopFamilyNamePolling() {
+  if (_familyNamePollTimer) { clearInterval(_familyNamePollTimer); _familyNamePollTimer = null; }
+}
+
+function startFamilyNamePolling() {
+  stopFamilyNamePolling();
+  _familyNamePollTimer = setInterval(async () => {
+    if (!state.user || !state.user.can_switch_context) return;
+    if (document.visibilityState === 'hidden') return;
+    try {
+      const families = await api('/api/my-families');
+      const changed = families.some(f => {
+        const old = (state.families || []).find(x => x.parent_id === f.parent_id);
+        return old && old.family_name !== f.family_name;
+      });
+      if (!changed) return;
+      state.families = families;
+      // Patch option labels without full re-render
+      const sel = document.querySelector('.family-select');
+      if (!sel) return;
+      families.forEach(f => {
+        const opt = [...sel.options].find(o => parseInt(o.value, 10) === f.parent_id);
+        if (opt) opt.textContent = f.is_self ? 'Моя семья'
+          : (f.family_name || f.parent_username) + (f.role === 'validator' ? ' (Валидатор)' : '');
+      });
+    } catch (_) { /* ignore */ }
+  }, 15000);
 }
 
 function dayTypeOf(dateStr, todayDateStr) {
@@ -121,7 +156,7 @@ function renderFamilySwitcher() {
     ...families.map(f => h('option', {
       value: String(f.parent_id),
       selected: f.parent_id === currentParentId
-    }, f.is_self ? `Моя семья` : `${f.parent_username} (${f.role === 'admin' ? 'админ' : 'валидатор'})`))
+    }, f.is_self ? 'Моя семья' : (f.family_name || f.parent_username) + (f.role === 'validator' ? ' (Валидатор)' : '')))
   );
   sel.onchange = async () => {
     const pid = parseInt(sel.value, 10);
@@ -153,6 +188,7 @@ async function api(path, options = {}) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
+    cache: 'no-store',
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
@@ -209,9 +245,6 @@ function renderLogin() {
     try {
       await api('/api/login', { method: 'POST', body: { username: username.value, password: password.value } });
       clearTgSuppression();
-      // Auto-bind Telegram only when no user owns this tg_user_id yet
-      // (tg-auth returns action='bound' in that case).
-      if (tgInitData) await tryTelegramAuth();
       await enterAfterLogin();
     } catch (e) { showError(e); }
   };
@@ -284,6 +317,7 @@ function renderModeToggle() {
   if (!validatorOnly) {
     buttons.push(h('button', {
       class: 'ghost',
+      style: 'font-size:20px;padding:4px 6px',
       onclick: () => {
         // No PIN set yet → switch in one click. The user can set a PIN later
         // in Settings to gate the switch.
@@ -297,10 +331,11 @@ function renderModeToggle() {
         render();
       },
       title: 'Войти как родитель'
-    }, 'Родитель 🔓'));
+    }, '🔓'));
   }
   buttons.push(h('button', {
     class: 'ghost',
+    style: 'font-size:20px;padding:4px 6px',
     onclick: () => {
       state.showModeAuth = true;
       state.modeAuthTarget = 'validator';
@@ -308,7 +343,7 @@ function renderModeToggle() {
       render();
     },
     title: 'Войти как валидатор'
-  }, 'Валидатор ✅'));
+  }, '✅'));
   return h('span', {}, ...buttons);
 }
 
@@ -617,6 +652,7 @@ async function openKid(id) {
     state.selectedDate = state.currentKid.today.date;
     state.selectedDay = state.currentKid.today; // { date, tasks, reward }
     state.calendarAnchor = null; // re-center strip on selected date
+    state._calendarNeedsScroll = true;
     // Reset per-kid reward unlock state so admin must re-enter password every time
     state.rewardUnlocked = false;
     state.showUnlockForm = false;
@@ -634,6 +670,7 @@ async function selectDate(date) {
   state.selectedDate = date;
   // Re-center the calendar strip on the newly selected date
   state.calendarAnchor = null;
+  state._calendarNeedsScroll = true;
   // Reset reward unlock when switching days so password can't be "reused"
   state.rewardUnlocked = false;
   state.showUnlockForm = false;
@@ -654,7 +691,16 @@ async function reloadKid() {
   const day = state.selectedDay;
   const allDone = day.tasks.length > 0 && day.tasks.every(t => t.completed);
   if (!allDone) state.rewardUnlocked = false;
-  render();
+  // Patch only the dynamic parts — calendar strip is never touched,
+  // so its scroll position stays exactly where the user left it.
+  const inner = document.getElementById('kid-dyn-inner');
+  const outer = document.getElementById('kid-dyn-outer');
+  if (inner && outer) {
+    inner.replaceWith(renderKidDynInner());
+    outer.replaceWith(renderKidDynOuter());
+  } else {
+    render(); // fallback if DOM structure is unexpected
+  }
 }
 
 // Horizontal date strip: shows a window of days around the selected date,
@@ -713,13 +759,18 @@ function renderCalendarStrip(kid, todayDate) {
   startClockTicker();
 
   const strip = h('div', { class: 'cal-strip' }, ...cells);
-  // After mount, center the selected cell horizontally inside the strip
-  queueMicrotask(() => {
-    const sel = strip.querySelector('.cal-selected');
-    if (sel && strip.scrollWidth > strip.clientWidth) {
-      strip.scrollLeft = sel.offsetLeft - (strip.clientWidth - sel.offsetWidth) / 2;
-    }
-  });
+  // After mount, center the selected cell — only when the date just changed.
+  // rAF fires after browser layout so scrollWidth/offsetLeft are available.
+  if (state._calendarNeedsScroll) {
+    state._calendarNeedsScroll = false;
+    requestAnimationFrame(() => {
+      const sel = strip.querySelector('.cal-selected');
+      if (sel && strip.scrollWidth > strip.clientWidth) {
+        strip.scrollLeft = sel.offsetLeft - (strip.clientWidth - sel.offsetWidth) / 2;
+        state._calStripScroll = strip.scrollLeft;
+      }
+    });
+  }
 
   return h('div', { class: 'calendar-wrap' },
     h('div', { class: 'cal-header' },
@@ -990,104 +1041,91 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
   return h('div', { class: 'card' }, ...inner);
 }
 
-function renderKid() {
-  const data = state.currentKid;
-  const { kid, today, history, stats } = data;
+// Dynamic inner part of kid page: progress + tasks + add-input.
+// Wrapped in id="kid-dyn-inner" so reloadKid() can patch it without
+// touching the calendar strip.
+function renderKidDynInner() {
+  const { kid, today } = state.currentKid;
   const day = state.selectedDay;
   const dayType = dayTypeOf(day.date, today.date);
   const total = day.tasks.length;
   const done = day.tasks.filter(t => t.completed).length;
   const pct = total ? Math.round(done * 100 / total) : 0;
-  const allDone = total > 0 && done === total;
   const admin = isAdmin();
-  // Admin adds/deletes tasks (today + future). Anyone can toggle checkboxes
-  // on today (kid marks off what they did; admin verifies in person).
   const canEditTasks = admin && (dayType === 'today' || dayType === 'future');
   const canToggleTasks = dayType === 'today';
-
-  const taskInput = h('input', { placeholder: dayType === 'today' ? 'Новое задание на сегодня' : `Новое задание на ${day.date}` });
 
   const emptyMsg =
     dayType === 'today' ? (admin ? 'Заданий на сегодня нет. Добавьте ниже.' : 'На сегодня заданий ещё нет.')
     : dayType === 'past' ? 'В этот день заданий не было.'
     : (admin ? 'Заданий ещё нет. Добавьте ниже.' : 'Этот день ещё не наступил.');
 
-  return h('div', {},
-    h('div', { class: 'header' },
-      h('button', { class: 'ghost', onclick: async () => { await loadKids(); go('kids'); } }, '‹ Назад'),
-      h('div', { style: 'display:flex;align-items:center;gap:10px;flex:1;min-width:0' },
-        renderAvatar(kid, 36),
-        h('h1', { style: 'margin:0;font-size:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, kid.name)
-      ),
-      h('div', {},
-        renderModeToggle(),
-        admin && h('button', { class: 'ghost danger', onclick: async () => {
-          if (!confirm(`Удалить профиль ${kid.name}?`)) return;
-          await api(`/api/kids/${kid.id}`, { method: 'DELETE' });
-          await loadKids();
-          go('kids');
-        } }, 'Удалить')
-      )
-    ),
+  const taskInput = h('input', { placeholder: dayType === 'today' ? 'Новое задание на сегодня' : `Новое задание на ${day.date}` });
 
-    h('div', { class: 'card' },
-      h('div', { class: 'muted' }, `${kid.age} лет, ${kid.gender}`),
-      h('div', { class: 'progress-wrap' }, h('div', { class: 'progress-bar', style: `width: ${pct}%` })),
-      h('div', { class: 'progress-label' }, `${done} / ${total} (${pct}%)`),
+  const taskEls = day.tasks.map(t => {
+    // Today: real checkbox. Past: show ✓ / ✕ marker (frozen). Future: lock icon.
+    let marker;
+    if (canToggleTasks) {
+      marker = h('input', {
+        type: 'checkbox',
+        // Show checked while pending OR approved — kid sees their tick stays
+        checked: !!t.completed || !!t.pending,
+        onchange: async () => { await api(`/api/tasks/${t.id}/toggle`, { method: 'POST' }); reloadKid(); }
+      });
+    } else if (dayType === 'future') {
+      marker = h('div', { class: 'task-marker future' }, '🔒');
+    } else {
+      // past, or today in view mode — show current state without checkbox
+      marker = h('div', { class: 'task-marker past ' + (t.completed ? 'done' : 'missed') }, t.completed ? '✓' : '○');
+    }
+    return h('div', { class: 'task' + (t.completed ? ' done' : '') + (t.pending ? ' pending' : '') + (!canToggleTasks ? ' readonly' : '') },
+      marker,
+      h('div', { class: 'title' }, t.title),
+      t.pending && h('span', { class: 'task-pending-badge', title: 'Ждёт подтверждения валидатора' }, 'На проверке'),
+      canEditTasks && admin && h('button', { class: 'del', onclick: async () => {
+        await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
+        reloadKid();
+      } }, '✕')
+    );
+  });
 
-      renderCalendarStrip(kid, today.date),
-
-      total === 0 && h('div', { class: 'empty' }, emptyMsg),
-
-      day.tasks.map(t => {
-        // Today: real checkbox. Past: show ✓ / ✕ marker (frozen). Future: lock icon.
-        let marker;
-        if (canToggleTasks) {
-          marker = h('input', {
-            type: 'checkbox',
-            // Show checked while pending OR approved — kid sees their tick stays
-            checked: !!t.completed || !!t.pending,
-            onchange: async () => { await api(`/api/tasks/${t.id}/toggle`, { method: 'POST' }); reloadKid(); }
-          });
-        } else if (dayType === 'future') {
-          marker = h('div', { class: 'task-marker future' }, '🔒');
-        } else {
-          // past, or today in view mode — show current state without checkbox
-          marker = h('div', { class: 'task-marker past ' + (t.completed ? 'done' : 'missed') }, t.completed ? '✓' : '○');
+  return h('div', { id: 'kid-dyn-inner' },
+    h('div', { class: 'progress-wrap' }, h('div', { class: 'progress-bar', style: `width: ${pct}%` })),
+    h('div', { class: 'progress-label' }, `${done} / ${total} (${pct}%)`),
+    total === 0 && h('div', { class: 'empty' }, emptyMsg),
+    ...taskEls,
+    canEditTasks && admin && h('div', { class: 'row', style: 'margin-top: 10px' },
+      taskInput,
+      h('button', {
+        onclick: async () => {
+          if (!taskInput.value.trim()) return;
+          await api(`/api/kids/${kid.id}/tasks`, { method: 'POST', body: { date: day.date, title: taskInput.value.trim() } });
+          taskInput.value = '';
+          reloadKid();
         }
-        return h('div', { class: 'task' + (t.completed ? ' done' : '') + (t.pending ? ' pending' : '') + (!canToggleTasks ? ' readonly' : '') },
-          marker,
-          h('div', { class: 'title' }, t.title),
-          t.pending && h('span', { class: 'task-pending-badge', title: 'Ждёт подтверждения валидатора' }, 'На проверке'),
-          canEditTasks && admin && h('button', { class: 'del', onclick: async () => {
-            await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
-            reloadKid();
-          } }, '✕')
-        );
-      }),
+      }, 'Добавить')
+    )
+  );
+}
 
-      canEditTasks && admin && h('div', { class: 'row', style: 'margin-top: 10px' },
-        taskInput,
-        h('button', {
-          onclick: async () => {
-            if (!taskInput.value.trim()) return;
-            await api(`/api/kids/${kid.id}/tasks`, { method: 'POST', body: { date: day.date, title: taskInput.value.trim() } });
-            taskInput.value = '';
-            reloadKid();
-          }
-        }, 'Добавить')
-      )
-    ),
+// Dynamic outer part: reward + stats + history cards.
+function renderKidDynOuter() {
+  const { kid, today, history, stats } = state.currentKid;
+  const day = state.selectedDay;
+  const dayType = dayTypeOf(day.date, today.date);
+  const total = day.tasks.length;
+  const done = day.tasks.filter(t => t.completed).length;
+  const allDone = total > 0 && done === total;
+  const admin = isAdmin();
 
+  return h('div', { id: 'kid-dyn-outer' },
     renderRewardSection(kid, day, allDone, admin, dayType),
-
     admin && h('div', { class: 'card' },
       h('div', { class: 'section-title' }, 'Статистика'),
       h('div', {}, `Дней с заданиями: ${stats.days_with_tasks || 0}`),
       h('div', {}, `Всего заданий: ${stats.total_tasks || 0}, выполнено: ${stats.completed_tasks || 0}`),
       h('div', {}, `Наград получено: ${stats.rewards_claimed || 0}`)
     ),
-
     admin && h('div', { class: 'card' },
       h('div', { class: 'section-title' }, 'История'),
       history.length === 0
@@ -1100,6 +1138,41 @@ function renderKid() {
             )
           ))
     )
+  );
+}
+
+function renderKid() {
+  const { kid, today } = state.currentKid;
+  const admin = isAdmin();
+
+  return h('div', {},
+    h('div', { class: 'header' },
+      h('button', { class: 'ghost', onclick: async () => { await loadKids(); go('kids'); } }, '‹ Назад'),
+      h('div', { style: 'flex:1' }),
+      h('div', {},
+        renderModeToggle(),
+        admin && h('button', { class: 'ghost danger', onclick: async () => {
+          if (!confirm(`Удалить профиль ${kid.name}?`)) return;
+          await api(`/api/kids/${kid.id}`, { method: 'DELETE' });
+          await loadKids();
+          go('kids');
+        } }, 'Удалить')
+      )
+    ),
+
+    h('div', { class: 'card' },
+      h('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:6px' },
+        renderAvatar(kid, 48),
+        h('div', {},
+          h('div', { style: 'font-weight:600;font-size:16px' }, kid.name),
+          h('div', { class: 'muted' }, `${kid.age} лет, ${kid.gender}`)
+        )
+      ),
+      renderCalendarStrip(kid, today.date),
+      renderKidDynInner()
+    ),
+
+    renderKidDynOuter()
   );
 }
 
@@ -1386,13 +1459,44 @@ function renderPinBlock() {
   );
 }
 
+function renderGeneralBlock() {
+  const currentName = (state.user && state.user.family_name) || '';
+  const input = h('input', { placeholder: 'Например: Семья Ивановых', value: currentName });
+  const submit = async () => {
+    if (!input.value.trim()) return;
+    try {
+      await api('/api/family-name', { method: 'POST', body: { name: input.value.trim() } });
+      state.generalError = null;
+      state.generalSuccess = 'Сохранено';
+      await refreshUser();
+      render();
+      setTimeout(() => { state.generalSuccess = null; render(); }, 2000);
+    } catch (e) {
+      state.generalError = e.message || 'Не удалось сохранить';
+      state.generalSuccess = null;
+      render();
+    }
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  return h('div', { class: 'card' },
+    h('div', { class: 'section-title' }, 'Название семьи'),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
+      'Это имя увидят приглашённые валидаторы вместо вашего ID.'),
+    h('div', { class: 'tg-field', style: 'margin-bottom: 8px' }, input),
+    state.generalError && h('div', { class: 'error', style: 'margin-bottom: 8px' }, state.generalError),
+    state.generalSuccess && h('div', { style: 'color: #34c759; margin-bottom: 8px; font-size: 13px' }, state.generalSuccess),
+    h('button', { onclick: submit }, 'Сохранить')
+  );
+}
+
 function renderSettings() {
   const tabs = [
+    { id: 'general',    label: 'Общее' },
     { id: 'pin',        label: 'PIN' },
     { id: 'invites',    label: 'Приглашения' },
     { id: 'validators', label: 'Валидаторы' },
   ];
-  const tab = state.settingsTab || 'pin';
+  const tab = state.settingsTab || 'general';
 
   const tabBar = h('div', { class: 'settings-tabs' },
     ...tabs.map(t => h('button', {
@@ -1402,7 +1506,9 @@ function renderSettings() {
   );
 
   let content;
-  if (tab === 'pin') {
+  if (tab === 'general') {
+    content = renderGeneralBlock();
+  } else if (tab === 'pin') {
     content = renderPinBlock();
   } else if (tab === 'invites') {
     content = renderInvitesBlock();
@@ -1424,9 +1530,8 @@ function renderPending() {
   const items = state.pendingTasks || [];
   const grouped = new Map();
   for (const t of items) {
-    const key = `${t.kid_id}|${t.kid_name}|${t.kid_photo || ''}`;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(t);
+    if (!grouped.has(t.kid_id)) grouped.set(t.kid_id, []);
+    grouped.get(t.kid_id).push(t);
   }
 
   return h('div', {},
@@ -1444,13 +1549,16 @@ function renderPending() {
       ? h('div', { class: 'card' },
           h('div', { class: 'empty' }, 'Нет заданий, ждущих подтверждения. Можно отдохнуть! ✨')
         )
-      : Array.from(grouped.entries()).map(([key, tasks]) => {
-          const [, name, photo] = key.split('|');
-          const kidStub = { name, photo: photo || null };
+      : Array.from(grouped.values()).map(tasks => {
+          const t0 = tasks[0];
+          const kidStub = { name: t0.kid_name, photo: t0.kid_photo || null };
           return h('div', { class: 'card' },
             h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:8px' },
-              renderAvatar(kidStub, 36),
-              h('div', { style: 'font-weight:600' }, name)
+              renderAvatar(kidStub, 40),
+              h('div', {},
+                h('div', { style: 'font-weight:600' }, t0.kid_name),
+                h('div', { class: 'muted', style: 'font-size:13px' }, `${t0.kid_age} лет, ${t0.kid_gender}`)
+              )
             ),
             ...tasks.map(t => h('div', { class: 'task pending' },
               h('div', { class: 'task-marker pending-mark' }, '⏳'),
@@ -1481,6 +1589,7 @@ function render() {
   let view;
   switch (state.route) {
     case 'login': view = renderLogin(); break;
+    case 'setup-family': view = renderSetupFamily(); break;
     case 'kids': view = renderKidsList(); break;
     case 'kid': view = renderKid(); break;
     case 'settings': view = renderSettings(); break;
@@ -1490,6 +1599,35 @@ function render() {
   root.append(view);
   const modal = renderModeAuthModal();
   if (modal) root.append(modal);
+}
+
+// ---- Setup family (mandatory on first login) ----
+function renderSetupFamily() {
+  const input = h('input', { placeholder: 'Например: Семья Ивановых', style: 'width: 100%; box-sizing: border-box' });
+  const submit = async () => {
+    if (!input.value.trim()) return;
+    try {
+      await api('/api/family-name', { method: 'POST', body: { name: input.value.trim() } });
+      state.setupFamilyError = null;
+      await refreshUser();
+      await routeForCurrentContext();
+    } catch (e) {
+      state.setupFamilyError = e.message || 'Не удалось сохранить';
+      render();
+    }
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  return h('div', { class: 'page' },
+    h('div', { class: 'card', style: 'text-align: center; padding: 32px 24px' },
+      h('div', { style: 'font-size: 40px; margin-bottom: 12px' }, '👨‍👩‍👧'),
+      h('h2', { style: 'margin-bottom: 8px' }, 'Как называется ваша семья?'),
+      h('p', { class: 'muted', style: 'margin-bottom: 20px' },
+        'Это имя увидят приглашённые валидаторы. Его можно изменить позже в Настройках.'),
+      h('div', { class: 'tg-field', style: 'margin-bottom: 12px' }, input),
+      state.setupFamilyError && h('div', { class: 'error', style: 'margin-bottom: 8px' }, state.setupFamilyError),
+      h('button', { style: 'width: 100%', onclick: submit }, 'Продолжить')
+    )
+  );
 }
 
 // ---- Boot ----
@@ -1505,15 +1643,18 @@ async function refreshUser() {
       role: me.role,                       // primary role (admin / legacy validator)
       tg_linked: !!me.tg_linked,
       has_pin: !!me.has_pin,
-      context: me.context || null,        // { parent_id, parent_username, role, is_self }
+      family_name: me.family_name || null,
+      context: me.context || null,        // { parent_id, parent_username, parent_family_name, role, is_self }
       can_switch_context: !!me.can_switch_context
     };
     // Load the list of available families so the header switcher has data.
     if (me.can_switch_context) {
       try { state.families = await api('/api/my-families'); }
       catch { state.families = []; }
+      startFamilyNamePolling();
     } else {
       state.families = [];
+      stopFamilyNamePolling();
     }
   }
   return me;
@@ -1536,6 +1677,8 @@ async function routeForCurrentContext() {
 async function enterAfterLogin() {
   const me = await refreshUser();
   if (!me.authenticated) return bootToLogin();
+  // Admins must set a family name before doing anything else.
+  if (me.role === 'admin' && !me.family_name) { go('setup-family'); return; }
   // If we arrived via an invite link, redeem it now (idempotent) and switch
   // into the new family's validator context.
   const inviteToken = readInviteFromUrl();
