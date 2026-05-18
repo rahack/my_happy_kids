@@ -13,7 +13,7 @@
 .
 ├── server.js        # Express + сессии + REST API + автозапуск туннеля
 ├── bot.js           # Telegram-бот, кнопка запуска Mini App
-├── tunnel.js        # Wrapper над cloudflared (quick tunnel)
+├── tunnel.js        # Туннель с авто-fallback: cloudflared → serveo.net → localtunnel
 ├── db.js            # SQLite, схема (users / kids / tasks / rewards / invites / memberships) + миграции
 ├── public/          # Mini App: index.html, app.js, style.css
 ├── tools/
@@ -36,9 +36,10 @@
    npm start
    ```
    `server.js` автоматически:
-   - запустит `tools/cloudflared.exe` (quick tunnel, без регистрации);
-   - получит публичный URL вида `https://<random>.trycloudflare.com`;
-   - подставит его как `WEBAPP_URL` для бота.
+   - попробует `tools/cloudflared.exe` (quick tunnel, без регистрации);
+   - при сбое cloudflared — **serveo.net** (SSH, без установки);
+   - при сбое serveo — **localtunnel** (`*.loca.lt`);
+   - URL первого успешного подставит как `WEBAPP_URL` для бота.
 
    В консоли увидите строки `[tunnel] public URL ready: ...` и `[bot] @<...> ready`.
 4. Открыть Mini App:
@@ -49,11 +50,15 @@
    - **Валидатор:** заводится админом в его настройках (логин + пароль). После этого валидатор заходит обычной формой логин/пароль в нижней части экрана — без Telegram-привязки.
 
 ### Туннелирование
-- По умолчанию используется **cloudflared quick tunnel** (бесплатно, без регистрации). Бинарь лежит в `tools/cloudflared.exe`.
+Автоматический fallback по цепочке (каждый следующий пробуется только при отказе предыдущего):
+1. **cloudflared** — quick tunnel, без регистрации. Бинарь `tools/cloudflared.exe`.
+2. **serveo.net** — SSH-туннель, не требует бинарей. Нужен открытый исходящий TCP:22.
+3. **localtunnel** — npm-пакет (`localtunnel`), URL вида `*.loca.lt`. Наименее надёжный.
+
 - URL **меняется при каждом перезапуске** — это особенность quick tunnel.
 - Чтобы зафиксировать URL: создайте named tunnel в кабинете Cloudflare и пропишите его в `WEBAPP_URL` (тогда автозапуск пропустится).
-- Кастомный путь к бинарю: `CLOUDFLARED_PATH=C:\path\to\cloudflared.exe`.
-- Отключить туннелирование: `NO_TUNNEL=1` (полезно, если хочется только локальный доступ).
+- Кастомный путь к cloudflared: `CLOUDFLARED_PATH=C:\path\to\cloudflared.exe`.
+- Отключить туннелирование: `NO_TUNNEL=1` (только локальный доступ).
 
 ## Сценарий
 
@@ -149,10 +154,12 @@
 - `POST /api/invites/redeem {token}` — принять приглашение. Текущий юзер становится валидатором в семье admin'а. Только для пользователей с primary-role `admin` (TG-зарегистрированных).
 
 ### Валидаторы (CRUD, только admin своей семьи)
-- `GET /api/validators` — список валидаторов текущей семьи.
+- `GET /api/validators` — список локальных валидаторов текущей семьи.
 - `POST /api/validators {username, password}` — создать нового валидатора.
-- `DELETE /api/validators/:id` — удалить.
+- `DELETE /api/validators/:id` — удалить локального валидатора.
 - `POST /api/validators/:id/password {password}` — сменить пароль валидатору.
+- `GET /api/members` — объединённый список: локальные валидаторы (`type:'local'`) + TG-гости по invite (`type:'tg_member'`). Используется страницей «Валидаторы» в Настройках.
+- `DELETE /api/members/:id` — отозвать доступ TG-гостя (удаляет строку из `memberships`, аккаунт не трогает).
 
 ### Данные (admin = active context)
 - `GET /api/kids` / `POST /api/kids {name, age, gender, photo?}` / `PUT /api/kids/:id {name, age, gender, photo?}` / `DELETE /api/kids/:id` — только в admin-контексте.

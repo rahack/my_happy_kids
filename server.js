@@ -498,6 +498,33 @@ app.delete('/api/validators/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// Combined list of validators for the admin's current family:
+// local password-based validators (users.role='validator', parent_id=owner)
+// + TG-invited admin-users that accepted an invite (memberships rows).
+app.get('/api/members', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const local = db.prepare(
+    "SELECT id, username, tg_user_id, created_at, 'local' AS type FROM users WHERE role = 'validator' AND parent_id = ? ORDER BY username"
+  ).all(ownerId);
+  const tgMembers = db.prepare(`
+    SELECT u.id, u.username, u.tg_user_id, m.created_at, 'tg_member' AS type
+    FROM memberships m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.parent_id = ?
+    ORDER BY u.username
+  `).all(ownerId);
+  res.json([...local, ...tgMembers].map(r => ({ ...r, tg_linked: !!r.tg_user_id })));
+});
+
+// Revoke a TG-membership (removes the memberships row; the user account stays).
+app.delete('/api/members/:id', requireAdmin, (req, res) => {
+  const memberId = parseInt(req.params.id, 10);
+  const ownerId = ownerOf(req);
+  const result = db.prepare('DELETE FROM memberships WHERE user_id = ? AND parent_id = ?').run(memberId, ownerId);
+  if (result.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
 app.post('/api/validators/:id/password', requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { password } = req.body || {};

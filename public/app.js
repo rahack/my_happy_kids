@@ -4,7 +4,7 @@ if (tg) { tg.ready(); tg.expand(); }
 
 const root = document.getElementById('app');
 const state = {
-  route: 'login',
+  route: null,  // null during boot — render() skips until first go()
   user: null,                // { username, role, tg_linked }
   kids: [],
   currentKid: null,
@@ -79,6 +79,29 @@ function startClockTicker() {
     const el = document.querySelector('.cal-clock');
     if (el) el.textContent = formatClock(new Date());
   }, 1000);
+}
+
+// ---- Background polling ----
+let _pollTimer = null;
+let _polling = false;
+
+function stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+function startPolling(fn, ms = 5000) {
+  stopPolling();
+  const run = async () => {
+    if (document.visibilityState === 'hidden' || _polling) return;
+    _polling = true;
+    try { await fn(); } catch (_) { /* ignore poll errors */ }
+    finally { _polling = false; }
+  };
+  _pollTimer = setInterval(run, ms);
+  // Poll immediately when switching back to the tab after being away.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && _pollTimer) run();
+  }, { once: true });
 }
 
 function dayTypeOf(dateStr, todayDateStr) {
@@ -161,10 +184,13 @@ const h = (tag, attrs = {}, ...children) => {
 };
 
 function go(route, extra = {}) {
+  stopPolling();
   state.route = route;
   state.error = null;
   Object.assign(state, extra);
   render();
+  if (route === 'kid') startPolling(() => reloadKid());
+  if (route === 'pending') startPolling(async () => { await loadPendingTasks(); render(); });
 }
 
 function showError(err) {
@@ -419,7 +445,7 @@ function renderKidsList() {
         isAdmin() && h('button', { class: 'ghost', onclick: async () => {
           try { await loadValidators(); } catch (e) { /* ignore */ }
           try { await loadInvites(); } catch (e) { /* ignore */ }
-          state.inviteCopiedAt = 0;
+          state.inviteCopiedAt = null;
           go('settings');
         } }, 'Настройки'),
         isAdmin() && h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); suppressTgAutoLogin(); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
@@ -1078,7 +1104,7 @@ function renderKid() {
 }
 
 async function loadValidators() {
-  state.validators = await api('/api/validators');
+  state.validators = await api('/api/members');
 }
 
 // Manual creation of a validator account by login/password (legacy flow,
@@ -1106,43 +1132,50 @@ function renderValidatorAddBlock() {
 }
 
 // Combined list of validators in the family — both legacy login/password
-// accounts and TG-invited memberships are surfaced here for the admin.
+// accounts (type='local') and TG-invited memberships (type='tg_member').
 function renderValidatorsListBlock() {
   const list = state.validators || [];
   return h('div', { class: 'card' },
     h('div', { class: 'section-title' }, 'Валидаторы семьи'),
     list.length === 0
       ? h('div', { class: 'empty' }, 'Пока нет валидаторов.')
-      : h('div', {}, ...list.map(v => h('div', { class: 'kid-row' },
-          h('div', { style: 'flex: 1' },
-            h('div', { style: 'font-weight: 600' }, v.username),
-            h('div', { class: 'kid-meta' }, v.tg_linked ? 'Telegram привязан' : 'Telegram не привязан')
-          ),
-          h('button', {
-            class: 'icon-btn',
-            title: 'Сменить пароль',
-            onclick: async () => {
-              const p = prompt(`Новый пароль для ${v.username}:`);
-              if (!p) return;
-              try {
-                await api(`/api/validators/${v.id}/password`, { method: 'POST', body: { password: p } });
-                alert('Пароль изменён');
-              } catch (e) { showError(e); }
-            }
-          }, '🔑'),
-          h('button', {
-            class: 'icon-btn danger',
-            title: 'Удалить',
-            onclick: async () => {
-              if (!confirm(`Удалить валидатора ${v.username}?`)) return;
-              try {
-                await api(`/api/validators/${v.id}`, { method: 'DELETE' });
-                await loadValidators();
-                render();
-              } catch (e) { showError(e); }
-            }
-          }, '🗑')
-        )))
+      : h('div', {}, ...list.map(v => {
+          const isTg = v.type === 'tg_member';
+          return h('div', { class: 'kid-row' },
+            h('div', { style: 'flex: 1' },
+              h('div', { style: 'font-weight: 600' }, v.username),
+              h('div', { class: 'kid-meta' }, isTg ? 'Гость через Telegram' : (v.tg_linked ? 'Telegram привязан' : 'Telegram не привязан'))
+            ),
+            !isTg && h('button', {
+              class: 'icon-btn',
+              title: 'Сменить пароль',
+              onclick: async () => {
+                const p = prompt(`Новый пароль для ${v.username}:`);
+                if (!p) return;
+                try {
+                  await api(`/api/validators/${v.id}/password`, { method: 'POST', body: { password: p } });
+                  alert('Пароль изменён');
+                } catch (e) { showError(e); }
+              }
+            }, '🔑'),
+            h('button', {
+              class: 'icon-btn danger',
+              title: isTg ? 'Отозвать доступ' : 'Удалить',
+              onclick: async () => {
+                if (!confirm(isTg ? `Отозвать доступ у ${v.username}?` : `Удалить валидатора ${v.username}?`)) return;
+                try {
+                  if (isTg) {
+                    await api(`/api/members/${v.id}`, { method: 'DELETE' });
+                  } else {
+                    await api(`/api/validators/${v.id}`, { method: 'DELETE' });
+                  }
+                  await loadValidators();
+                  render();
+                } catch (e) { showError(e); }
+              }
+            }, '🗑')
+          );
+        }))
   );
 }
 
@@ -1354,16 +1387,36 @@ function renderPinBlock() {
 }
 
 function renderSettings() {
+  const tabs = [
+    { id: 'pin',        label: 'PIN' },
+    { id: 'invites',    label: 'Приглашения' },
+    { id: 'validators', label: 'Валидаторы' },
+  ];
+  const tab = state.settingsTab || 'pin';
+
+  const tabBar = h('div', { class: 'settings-tabs' },
+    ...tabs.map(t => h('button', {
+      class: 'settings-tab' + (tab === t.id ? ' active' : ''),
+      onclick: () => { state.settingsTab = t.id; render(); }
+    }, t.label))
+  );
+
+  let content;
+  if (tab === 'pin') {
+    content = renderPinBlock();
+  } else if (tab === 'invites') {
+    content = renderInvitesBlock();
+  } else {
+    content = h('div', {}, renderValidatorAddBlock(), renderValidatorsListBlock());
+  }
+
   return h('div', {},
     h('div', { class: 'header' },
       h('button', { class: 'ghost', onclick: () => go('kids') }, '‹ Назад'),
       h('h1', {}, 'Настройки')
     ),
-    renderPinBlock(),
-    renderTelegramBlock(),
-    renderInvitesBlock(),
-    renderValidatorAddBlock(),
-    renderValidatorsListBlock()
+    tabBar,
+    content
   );
 }
 
@@ -1423,6 +1476,7 @@ function renderPending() {
 
 // ---- Render dispatcher ----
 function render() {
+  if (!state.route) return;  // still booting, nothing to show yet
   root.innerHTML = '';
   let view;
   switch (state.route) {

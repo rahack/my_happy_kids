@@ -302,4 +302,30 @@ input::placeholder { color: #999; }
 }
 .muted { color: #666; font-size: 13px; }
 .section-title { font-size: 14px; color: #666; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* Settings tabs */
+.settings-tabs {
+  display: flex;
+  background: var(--tg-theme-secondary-bg-color, #fff);
+  border-radius: 14px;
+  padding: 4px;
+  margin-bottom: 12px;
+  gap: 4px;
+}
+.settings-tab {
+  flex: 1;
+  padding: 8px 4px;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #666;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.settings-tab.active {
+  background: var(--tg-theme-button-color, #007aff);
+  color: var(--tg-theme-button-text-color, #fff);
+}
 .empty { text-align: center; color: #888; padding: 20px; }
