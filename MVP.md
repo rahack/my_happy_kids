@@ -79,10 +79,18 @@
    - Форма «Добавить ребёнка» в режиме родителя свёрнута за кнопку — раньше форма висела сверху всегда.
    - При выходе из режима Родителя сбрасываются открытые админские состояния (форма редактирования профиля, форма добавления).
 
+10. **Multi-tenancy + Telegram-вход + invite-ссылки** (коммит «Add validators to app»).
+    - Схема БД полностью переехала с single-row `admin` на полноценную `users (id, username UNIQUE, password_hash, role IN ('admin','validator'), parent_id, tg_user_id UNIQUE, admin_pin_hash)`. Data-таблицы (`kids`/`tasks`/`rewards`) обзавелись `owner_id` — каждая семья видит только свои записи.
+    - **`POST /api/tg-auth {initData}`** — HMAC-проверка `Telegram.WebApp.initData` (`verifyTelegramInitData` по схеме [Telegram WebApp validation](https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app)). При первом входе сервер автоматически регистрирует нового админа под TG-юзера (username `tg_<tg_id>`, пароль рандомный) — каждый TG-пользователь получает свою «семью».
+    - **Валидаторы стали полноценными аккаунтами в БД** (`users.role='validator'`, `parent_id` = админ). CRUD: `GET/POST/DELETE /api/validators`, `POST /api/validators/:id/password`. Захардкоженных кредов больше нет.
+    - **PIN-код родителя** (`users.admin_pin_hash`, добавляется через `ensureColumn`) — отдельная сущность от пароля аккаунта. Гейтит переход `view → admin` через `/api/verify-pin`. Endpoints: `POST /api/admin-pin {pin, oldPin?}`, `DELETE /api/admin-pin {pin}`. До установки PIN'а переключение в admin-mode мгновенное — фичу можно «отложить» до настройки.
+    - **Invite-ссылки** (`invites (token UNIQUE, parent_id)`). `POST /api/invites` генерит permanent multi-use токен, бот превращает его в deeplink `t.me/<bot>?start=inv_<token>` → inline-кнопка «Принять приглашение» открывает Mini App с `?invite=<token>`. `POST /api/invites/redeem {token}` пишет строку в `memberships (user_id, parent_id, role='validator')` — приглашённый становится гостевым валидатором.
+    - **Семейный контекст в сессии:** `req.session.contextParentId` + `contextRole`. Хелпер `ownerOf(req) = contextParentId` — по нему фильтруются все запросы. `requireAdmin`/`requireValidator` гейтят на `contextRole`, не на primary `role`. `GET /api/my-families` + `POST /api/switch-context {parent_id}` — переключение между семьями (для админа, гостящего по invite в чужих семьях).
+    - **UI:** форма логина теперь одна (без выбора роли), сверху — кнопка «Войти через Telegram». Модалка `view → admin` принимает только PIN (без логина). В шапке списка детей — `<select class="family-select">` для переключения семей, если их больше одной.
+
 ## Известные ограничения прототипа
 
-- Telegram WebApp `initData` не валидируется на сервере — авторизация по логину/паролю и сессии, как было в ТЗ.
 - Переключатель режима «Просмотр»/«Родитель»/«Валидатор» — это UI-удобство, а не строгая серверная защита. На бэке роль есть и часть эндпоинтов гейтится (`requireAdmin` для CRUD), но `approve`/`reject` доступны любой авторизованной сессии (compromise: не хранить «validator-unlocked» в сессии). Для защиты от случайного нажатия ребёнком — достаточно; для защиты от мотивированного — нет.
-- Пароль валидатора захардкожен в `server.js` (`VALIDATOR_USER` / `VALIDATOR_PASS`). Менять — правкой кода и рестартом, не через API.
 - Quick tunnel URL меняется при каждом перезапуске сервера (для стабильного URL нужен named tunnel в Cloudflare).
-- Миграции БД — только лёгкие через `ensureColumn` (добавление nullable-колонок). Несовместимых изменений нет, тестов и CI тоже нет.
+- Миграции БД — только лёгкие через `ensureColumn` (добавление nullable-колонок). Переход на multi-tenant схему был breaking (single-row `admin` → `users` + `owner_id`) — без авто-миграции, требует пересоздания `data.db`. Тестов и CI нет.
+- TG-зарегистрированные админы не знают своего пароля (он рандомный). Валидаторы и admin-context-switch работают, но «забыл пароль» для TG-админа = заходить заново через Telegram (это не баг, а дизайн).
