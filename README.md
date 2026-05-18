@@ -13,7 +13,7 @@
 .
 ├── server.js        # Express + сессии + REST API + автозапуск туннеля
 ├── bot.js           # Telegram-бот, кнопка запуска Mini App
-├── tunnel.js        # Туннель с авто-fallback: cloudflared → serveo.net → localtunnel
+├── tunnel.js        # Туннель с авто-fallback: cloudflared → pinggy.io
 ├── db.js            # SQLite, схема (users / kids / tasks / rewards / invites / memberships) + миграции
 ├── public/          # Mini App: index.html, app.js, style.css
 ├── tools/
@@ -37,8 +37,7 @@
    ```
    `server.js` автоматически:
    - попробует `tools/cloudflared.exe` (quick tunnel, без регистрации);
-   - при сбое cloudflared — **serveo.net** (SSH, без установки);
-   - при сбое serveo — **localtunnel** (`*.loca.lt`);
+   - при сбое cloudflared — **pinggy.io** (SSH, без установки, URL вида `*.run.pinggy-free.link`; бесплатный туннель живёт 60 минут, после чего нужен рестарт);
    - URL первого успешного подставит как `WEBAPP_URL` для бота.
 
    В консоли увидите строки `[tunnel] public URL ready: ...` и `[bot] @<...> ready`.
@@ -52,8 +51,7 @@
 ### Туннелирование
 Автоматический fallback по цепочке (каждый следующий пробуется только при отказе предыдущего):
 1. **cloudflared** — quick tunnel, без регистрации. Бинарь `tools/cloudflared.exe`.
-2. **serveo.net** — SSH-туннель, не требует бинарей. Нужен открытый исходящий TCP:22.
-3. **localtunnel** — npm-пакет (`localtunnel`), URL вида `*.loca.lt`. Наименее надёжный.
+2. **pinggy.io** — SSH-туннель (`ssh -p 443 -R 0:localhost:PORT a.pinggy.io`), не требует бинарей. URL вида `*.run.pinggy-free.link`. Бесплатный туннель живёт **60 минут** — после этого нужен рестарт `npm start`.
 
 - URL **меняется при каждом перезапуске** — это особенность quick tunnel.
 - Чтобы зафиксировать URL: создайте named tunnel в кабинете Cloudflare и пропишите его в `WEBAPP_URL` (тогда автозапуск пропустится).
@@ -134,7 +132,7 @@
 ### Авторизация
 - `POST /api/login {username, password}` — обычный логин по БД. Роль (`admin`/`validator`) определяется по записи в `users`.
 - `POST /api/tg-auth {initData}` — Telegram-логин. Валидирует initData по HMAC. При первом входе создаёт нового админа автоматически. Ответ: `{ ok, action: 'login' | 'bound' | 'registered' | 'conflict', username, role }`.
-- `POST /api/logout` / `GET /api/me` — возвращает `{ authenticated, username, role, tg_linked, has_pin, context: { parent_id, parent_username, role, is_self }, can_switch_context }`.
+- `POST /api/logout` / `GET /api/me` — возвращает `{ authenticated, username, role, tg_linked, has_pin, family_name, context: { parent_id, parent_username, parent_family_name, role, is_self }, can_switch_context }`.
 - `GET /api/has-kids` — публичная проба для UX логин-формы.
 
 ### PIN и подтверждения
@@ -146,7 +144,8 @@
 - `POST /api/change-password {oldPassword, newPassword}` — смена пароля текущего юзера (любая роль).
 
 ### Multi-family
-- `GET /api/my-families` — список контекстов, в которых пользователь может работать (своя семья + семьи по invite).
+- `POST /api/family-name {name}` — задать имя семьи (только admin, только своя семья). Отображается в switcher'е у гостей-валидаторов.
+- `GET /api/my-families` — список контекстов с полями `{ parent_id, parent_username, family_name, role, is_self }`.
 - `POST /api/switch-context {parent_id}` — переключить активный контекст. Только в рамках доступных семей.
 - `GET /api/invites` — список приглашений текущего админа (`{ id, token, created_at, url }`).
 - `POST /api/invites` — создать новый invite. Возвращает `{ id, token, url }` (URL вида `https://t.me/<bot>?start=inv_<token>`).
@@ -170,7 +169,7 @@
   - При снятии галочки автоматически сбрасывается `claimed=0` у награды дня, если после этого задачи не все выполнены.
 - `POST /api/tasks/:id/approve` — `pending → approved`, ставит `completed_at`.
 - `POST /api/tasks/:id/reject` — `pending → open`.
-- `GET /api/pending-tasks` — общий список заданий, ждущих подтверждения, с join'ом по детям (имя + фото) в рамках текущей семьи.
+- `GET /api/pending-tasks` — общий список заданий, ждущих подтверждения, с join'ом по детям (`kid_name`, `kid_photo`, `kid_age`, `kid_gender`) в рамках текущей семьи.
 - `POST /api/kids/:id/reward {date?, title}` (admin; upsert; смена title сбрасывает `claimed=0`).
 - `POST /api/rewards/:id/claim` (admin; проверяет, что все задачи дня approved).
 
