@@ -86,6 +86,24 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
   CREATE INDEX IF NOT EXISTS idx_memberships_parent ON memberships(parent_id);
+
+  -- Predefined task templates per admin (used as suggestions when adding tasks to a kid).
+  CREATE TABLE IF NOT EXISTS task_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_templates_owner ON task_templates(owner_id);
+
+  -- Predefined reward templates per admin (used as suggestions when adding a reward to a kid).
+  CREATE TABLE IF NOT EXISTS reward_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_reward_templates_owner ON reward_templates(owner_id);
 `);
 
 // Lightweight migrations: add nullable columns to existing tables without

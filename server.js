@@ -695,6 +695,72 @@ app.delete('/api/tasks/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Task Templates ----
+app.get('/api/task-templates', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const rows = db.prepare('SELECT * FROM task_templates WHERE owner_id = ? ORDER BY title').all(ownerId);
+  res.json(rows);
+});
+
+app.post('/api/task-templates', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const { title } = req.body || {};
+  if (!title) return res.status(400).json({ error: 'title required' });
+  const result = db.prepare('INSERT INTO task_templates (owner_id, title) VALUES (?, ?)').run(ownerId, title);
+  res.json({ id: result.lastInsertRowid });
+});
+
+app.put('/api/task-templates/:id', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const id = parseInt(req.params.id, 10);
+  const { title } = req.body || {};
+  if (!title) return res.status(400).json({ error: 'title required' });
+  const result = db.prepare('UPDATE task_templates SET title = ? WHERE id = ? AND owner_id = ?').run(title, id, ownerId);
+  if (result.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/task-templates/:id', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const id = parseInt(req.params.id, 10);
+  const result = db.prepare('DELETE FROM task_templates WHERE id = ? AND owner_id = ?').run(id, ownerId);
+  if (result.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+// ---- Reward Templates ----
+app.get('/api/reward-templates', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const rows = db.prepare('SELECT * FROM reward_templates WHERE owner_id = ? ORDER BY title').all(ownerId);
+  res.json(rows);
+});
+
+app.post('/api/reward-templates', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const { title } = req.body || {};
+  if (!title) return res.status(400).json({ error: 'title required' });
+  const result = db.prepare('INSERT INTO reward_templates (owner_id, title) VALUES (?, ?)').run(ownerId, title);
+  res.json({ id: result.lastInsertRowid });
+});
+
+app.put('/api/reward-templates/:id', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const id = parseInt(req.params.id, 10);
+  const { title } = req.body || {};
+  if (!title) return res.status(400).json({ error: 'title required' });
+  const result = db.prepare('UPDATE reward_templates SET title = ? WHERE id = ? AND owner_id = ?').run(title, id, ownerId);
+  if (result.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/reward-templates/:id', requireAdmin, (req, res) => {
+  const ownerId = ownerOf(req);
+  const id = parseInt(req.params.id, 10);
+  const result = db.prepare('DELETE FROM reward_templates WHERE id = ? AND owner_id = ?').run(id, ownerId);
+  if (result.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
 // ---- Rewards ----
 app.post('/api/kids/:id/reward', requireAdmin, (req, res) => {
   const ownerId = ownerOf(req);
