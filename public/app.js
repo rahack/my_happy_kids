@@ -1633,14 +1633,59 @@ function renderGeneralBlock() {
     }
   };
   input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
-  return h('div', { class: 'card' },
-    h('div', { class: 'section-title' }, 'Название семьи'),
-    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
-      'Это имя увидят приглашённые валидаторы вместо вашего ID.'),
-    h('div', { class: 'tg-field', style: 'margin-bottom: 8px' }, input),
-    state.generalError && h('div', { class: 'error', style: 'margin-bottom: 8px' }, state.generalError),
-    state.generalSuccess && h('div', { style: 'color: #34c759; margin-bottom: 8px; font-size: 13px' }, state.generalSuccess),
-    h('button', { onclick: submit }, 'Сохранить')
+
+  // Two-step inline confirmation — avoids window.confirm() which freezes
+  // Telegram's keyboard focus and breaks subsequent inputs.
+  const confirming = !!state.clearDbConfirm;
+
+  const dangerContent = confirming
+    ? h('div', {},
+        h('p', { style: 'color:#e53935;font-weight:600;margin-bottom:8px' },
+          'Вы уверены? Это необратимо.'),
+        h('p', { class: 'muted', style: 'margin-bottom:12px;font-size:13px' },
+          'Будут удалены все дети, задания, награды, шаблоны, валидаторы и приглашения.'),
+        state.generalError && h('div', { class: 'error', style: 'margin-bottom:8px' }, state.generalError),
+        h('div', { style: 'display:flex;gap:8px' },
+          h('button', { class: 'danger', style: 'flex:1', onclick: async () => {
+            try {
+              await api('/api/clear-database', { method: 'POST' });
+            } catch (e) {
+              state.generalError = e.message || 'Не удалось очистить базу данных';
+              state.clearDbConfirm = false;
+              render();
+              return;
+            }
+            window.location.reload();
+          } }, 'Да, удалить всё'),
+          h('button', { class: 'secondary', style: 'flex:1', onclick: () => {
+            state.clearDbConfirm = false;
+            render();
+          } }, 'Отмена')
+        )
+      )
+    : h('div', {},
+        h('p', { class: 'muted', style: 'margin-bottom:10px' },
+          'Удаляет все данные семьи: детей, задания, награды, шаблоны, валидаторов и приглашения. Действие необратимо.'),
+        h('button', { class: 'danger', onclick: () => {
+          state.clearDbConfirm = true;
+          render();
+        } }, 'Почистить базу данных')
+      );
+
+  return h('div', {},
+    h('div', { class: 'card' },
+      h('div', { class: 'section-title' }, 'Название семьи'),
+      h('p', { class: 'muted', style: 'margin-bottom: 10px' },
+        'Это имя увидят приглашённые валидаторы вместо вашего ID.'),
+      h('div', { class: 'tg-field', style: 'margin-bottom: 8px' }, input),
+      !confirming && state.generalError && h('div', { class: 'error', style: 'margin-bottom: 8px' }, state.generalError),
+      state.generalSuccess && h('div', { style: 'color: #34c759; margin-bottom: 8px; font-size: 13px' }, state.generalSuccess),
+      h('button', { onclick: submit }, 'Сохранить')
+    ),
+    h('div', { class: 'card', style: 'margin-top: 12px' },
+      h('div', { class: 'section-title' }, 'Опасная зона'),
+      dangerContent
+    )
   );
 }
 

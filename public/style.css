@@ -22,7 +22,7 @@ button, .btn {
 }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.secondary { background: #e0e0e3; color: #1c1c1e; }
-button.danger { background: #e53935; }
+button.danger { background: #e53935; color: #fff; }
 button.ghost { background: transparent; color: var(--tg-theme-button-color, #2481cc); padding: 6px 10px; }
 
 input, select {

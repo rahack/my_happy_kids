@@ -797,6 +797,33 @@ app.post('/api/rewards/:id/claim', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Clear database ----
+// Wipes all data belonging to the current admin's family: kids (cascade →
+// tasks/rewards), templates, validators, invites, memberships.
+// Then resets family_name so the user lands on the setup-family screen again.
+app.post('/api/clear-database', requireAdmin, (req, res) => {
+  const userId = req.session.userId;
+  const ownerId = ownerOf(req);
+
+  // Use a transaction so the wipe is atomic.
+  db.transaction(() => {
+    // Kids → tasks/rewards cascade via FK ON DELETE CASCADE.
+    db.prepare('DELETE FROM kids WHERE owner_id = ?').run(ownerId);
+    db.prepare('DELETE FROM task_templates WHERE owner_id = ?').run(ownerId);
+    db.prepare('DELETE FROM reward_templates WHERE owner_id = ?').run(ownerId);
+    // Delete local (password-based) validators owned by this admin.
+    db.prepare("DELETE FROM users WHERE role = 'validator' AND parent_id = ?").run(userId);
+    // Delete invite links created by this admin.
+    db.prepare('DELETE FROM invites WHERE parent_id = ?').run(userId);
+    // Delete cross-family memberships (both directions).
+    db.prepare('DELETE FROM memberships WHERE parent_id = ? OR user_id = ?').run(userId, userId);
+    // Reset family name so the next boot redirects to the setup-family screen.
+    db.prepare('UPDATE users SET family_name = NULL WHERE id = ?').run(userId);
+  })();
+
+  req.session.destroy(() => res.json({ ok: true }));
+});
+
 // ---- Static ----
 app.use(express.static(path.join(__dirname, 'public')));
 
