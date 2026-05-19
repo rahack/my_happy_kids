@@ -293,11 +293,14 @@ app.get('/api/me', (req, res) => {
 });
 
 // ---- Family name ----
-app.post('/api/family-name', requireAdmin, (req, res) => {
+// Uses requireAuth (not requireAdmin) so the user can set their own family
+// name regardless of which context (own family vs. guest validator) they are
+// currently acting in. Primary role must still be 'admin'.
+app.post('/api/family-name', requireAuth, (req, res) => {
   const { name } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
-  // Only allow editing own family (not when acting as validator in another family).
-  if (ownerOf(req) !== req.session.userId) return res.status(403).json({ error: 'can only edit own family name' });
+  const u = db.prepare('SELECT role FROM users WHERE id = ?').get(req.session.userId);
+  if (!u || u.role !== 'admin') return res.status(403).json({ error: 'only admins can set family name' });
   db.prepare('UPDATE users SET family_name = ? WHERE id = ?').run(String(name).trim(), req.session.userId);
   res.json({ ok: true });
 });
