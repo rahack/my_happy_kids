@@ -14,7 +14,7 @@
 ├── server.js        # Express + сессии + REST API + автозапуск туннеля
 ├── bot.js           # Telegram-бот, кнопка запуска Mini App
 ├── tunnel.js        # Туннель с авто-fallback: cloudflared → pinggy.io
-├── db.js            # SQLite, схема (users / kids / tasks / rewards / invites / memberships) + миграции
+├── db.js            # SQLite, схема (users / kids / tasks / rewards / invites / memberships / task_templates / reward_templates) + миграции
 ├── public/          # Mini App: index.html, app.js, style.css
 ├── tools/
 │   └── cloudflared.exe  # бинарь cloudflared (Windows AMD64)
@@ -66,6 +66,7 @@
 3. Переключиться в режим **«Родитель 🔓»** (кнопка справа вверху).
 4. Создать профиль ребёнка (имя, возраст, пол, опционально фото).
 5. Открыть профиль → выбрать день (полоса под шкалой) → добавить задачи → назначить награду.
+5a. (Опционально) В «Настройках» → вкладки **Задания** / **Награды** — заготовить шаблоны типовых заданий и наград. Они будут показываться как выпадающие подсказки при вводе на странице ребёнка.
 6. (Опционально) В «Настройках» завести валидатора (логин/пароль) — или сгенерировать invite-ссылку, чтобы пригласить валидатора через Telegram (см. ниже).
 7. Переключиться в режим **«Просмотр 👀»** и передать устройство ребёнку.
 
@@ -159,6 +160,12 @@
 - `POST /api/validators/:id/password {password}` — сменить пароль валидатору.
 - `GET /api/members` — объединённый список: локальные валидаторы (`type:'local'`) + TG-гости по invite (`type:'tg_member'`). Используется страницей «Валидаторы» в Настройках.
 - `DELETE /api/members/:id` — отозвать доступ TG-гостя (удаляет строку из `memberships`, аккаунт не трогает).
+
+### Шаблоны (CRUD, только admin своей семьи)
+- `GET /api/task-templates` / `POST /api/task-templates {title}` / `PUT /api/task-templates/:id {title}` / `DELETE /api/task-templates/:id` — шаблоны заданий.
+- `GET /api/reward-templates` / `POST /api/reward-templates {title}` / `PUT /api/reward-templates/:id {title}` / `DELETE /api/reward-templates/:id` — шаблоны наград.
+
+Управляются в Настройках → вкладки **Задания** / **Награды**. Появляются как выпадающие подсказки в полях ввода задания и награды на странице ребёнка.
 
 ### Данные (admin = active context)
 - `GET /api/kids` / `POST /api/kids {name, age, gender, photo?}` / `PUT /api/kids/:id {name, age, gender, photo?}` / `DELETE /api/kids/:id` — только в admin-контексте.
