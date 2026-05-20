@@ -15,7 +15,7 @@
 ├── bot.js           # Telegram-бот, кнопка запуска Mini App
 ├── tunnel.js        # Туннель с авто-fallback: cloudflared → pinggy.io
 ├── db.js            # SQLite, схема (users / kids / tasks / rewards / invites / memberships / task_templates / reward_templates) + миграции
-├── public/          # Mini App: index.html, app.js, style.css
+├── public/          # Mini App: index.html, app.js, style.css, i18n.js
 ├── tools/
 │   └── cloudflared.exe  # бинарь cloudflared (Windows AMD64)
 └── .env             # TELEGRAM_TOKEN, WEBAPP_URL?, SESSION_SECRET?
@@ -187,6 +187,17 @@
 - `POST /api/rewards/:id/claim` (admin; проверяет, что все задачи дня approved).
 
 Все запросы к данным фильтруются по `owner_id = session.contextParentId` — каждая семья видит только свои записи. Фото в `kids.photo` — base64 data URL; клиент даунскейлит до 256×256 (JPEG, q≈0.85). Лимит JSON-body поднят до 2МБ.
+
+## Мультиязычность (RU / EN)
+
+Приложение поддерживает два языка интерфейса: **русский** и **английский**.
+
+- Все строки UI находятся в `public/i18n.js` в объекте `TRANSLATIONS` (~260 ключей на язык).
+- Глобальные функции: `t(key)` — вернуть перевод текущего языка; `getLang()` — текущий язык (`'ru'` или `'en'`); `setLang(lang)` — сменить язык и сохранить в `localStorage`.
+- **Определение языка при старте** (IIFE `detectLang()` в начале `app.js`): приоритет — сохранённый выбор пользователя (`localStorage.lang`) → `tg.initDataUnsafe.user.language_code` → English по умолчанию.
+  > `language_code` отражает язык **аккаунта** Telegram (Настройки → Язык в Telegram), а не язык системы или интерфейса Telegram.
+- **Переключатель языка** — в «Настройках» → вкладка **Общее**. Две кнопки «Русский» / «English» (переиспользуют `.settings-tab`/`.settings-tab.active`). Выбор сохраняется в `localStorage.lang` и сразу перерисовывает интерфейс.
+- Внутренние коды пола (`'м'` / `'ж'`) остались как есть (идентификаторы БД). Для отображения используется `tGender(g)` → ключ `t('common.boy')` / `t('common.girl')`.
 
 ## Известные ограничения и нюансы
 - Telegram WebApp `initData` валидируется HMAC-проверкой по `TELEGRAM_TOKEN`. Без правильного токена `/api/tg-auth` вернёт 503/401 и регистрация админов через TG не будет работать.
