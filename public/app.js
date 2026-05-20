@@ -2,6 +2,16 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
+// Detect and set app language: saved preference → Telegram language → English.
+// setLang / getLang are defined in i18n.js which is loaded before app.js.
+(function detectLang() {
+  const saved = localStorage.getItem('lang');
+  if (saved === 'ru' || saved === 'en') return; // user set a preference explicitly
+  const tgLang = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code;
+  if (tgLang && tgLang.startsWith('ru')) setLang('ru');
+  // else: stays as 'en' (already set in i18n.js)
+})();
+
 const root = document.getElementById('app');
 const state = {
   route: null,  // null during boot — render() skips until first go()
@@ -137,8 +147,8 @@ function startFamilyNamePolling() {
       if (!sel) return;
       families.forEach(f => {
         const opt = [...sel.options].find(o => parseInt(o.value, 10) === f.parent_id);
-        if (opt) opt.textContent = f.is_self ? 'Моя семья'
-          : (f.family_name || f.parent_username) + (f.role === 'validator' ? ' (Валидатор)' : '');
+        if (opt) opt.textContent = f.is_self ? t('family.my')
+          : (f.family_name || f.parent_username) + (f.role === 'validator' ? t('family.validator_suffix') : '');
       });
     } catch (_) { /* ignore */ }
   }, 15000);
@@ -161,7 +171,7 @@ function renderFamilySwitcher() {
     ...families.map(f => h('option', {
       value: String(f.parent_id),
       selected: f.parent_id === currentParentId
-    }, f.is_self ? 'Моя семья' : (f.family_name || f.parent_username) + (f.role === 'validator' ? ' (Валидатор)' : '')))
+    }, f.is_self ? t('family.my') : (f.family_name || f.parent_username) + (f.role === 'validator' ? t('family.validator_suffix') : '')))
   );
   sel.onchange = async () => {
     const pid = parseInt(sel.value, 10);
@@ -224,6 +234,11 @@ const h = (tag, attrs = {}, ...children) => {
   return el;
 };
 
+// Returns a localized label for the stored gender code ('м' / 'ж').
+function tGender(g) {
+  return g === 'м' ? t('kid.gender_m') : t('kid.gender_f');
+}
+
 function go(route, extra = {}) {
   stopPolling();
   state.route = route;
@@ -244,8 +259,8 @@ function renderLogin() {
   // Single login form. Role (admin/validator) is determined server-side from
   // the username. Validator usernames are now arbitrary (set by their admin),
   // so no role chooser / prefilled credentials make sense anymore.
-  const username = h('input', { placeholder: 'Логин' });
-  const password = h('input', { type: 'password', placeholder: 'Пароль' });
+  const username = h('input', { placeholder: t('login.username') });
+  const password = h('input', { type: 'password', placeholder: t('login.password') });
   const submit = async () => {
     try {
       await api('/api/login', { method: 'POST', body: { username: username.value, password: password.value } });
@@ -268,25 +283,25 @@ function renderLogin() {
         if (r && (r.action === 'login' || r.action === 'registered')) {
           await enterAfterLogin();
         } else {
-          state.error = 'Не удалось войти через Telegram';
+          state.error = t('login.tg_error');
           render();
         }
       } catch (e) { showError(e); }
     }
-  }, 'Войти через Telegram');
+  }, t('login.tg_button'));
 
   return h('div', { class: 'card' },
-    h('h1', {}, 'Happy Kids'),
+    h('h1', {}, t('app.title')),
     h('p', { class: 'muted' },
       tgInitData
-        ? 'Родители — нажмите «Войти через Telegram». Валидаторам — введите логин и пароль, выданные родителем.'
-        : 'Родители заходят через Telegram. Валидаторам — введите логин и пароль, выданные родителем.'),
+        ? t('login.hint_inside_tg')
+        : t('login.hint_outside_tg')),
     tgLogin,
     h('div', { style: 'margin-bottom: 8px' }, username),
     h('div', { style: 'margin-bottom: 8px' }, password),
     state.error && h('div', { class: 'error' }, state.error),
     h('div', { class: 'row' },
-      h('button', { onclick: submit }, 'Войти')
+      h('button', { onclick: submit }, t('login.submit'))
     )
   );
 }
@@ -360,8 +375,8 @@ function renderModeToggle() {
       onclick: async () => {
         setMode('view');
       },
-      title: 'Переключить режим'
-    }, 'Просмотр 👀');
+      title: t('mode.switch_title')
+    }, t('mode.view'));
   }
   // View mode: offer Parent (if admin session) and/or Validator buttons.
   const buttons = [];
@@ -381,7 +396,7 @@ function renderModeToggle() {
         state.modeAuthError = '';
         render();
       },
-      title: 'Войти как родитель'
+      title: t('mode.parent_title')
     }, '🔓'));
   }
   buttons.push(h('button', {
@@ -393,9 +408,21 @@ function renderModeToggle() {
       state.modeAuthError = '';
       render();
     },
-    title: 'Войти как валидатор'
+    title: t('mode.validator_title')
   }, '✅'));
   return h('span', {}, ...buttons);
+}
+
+// Small button that toggles between Russian and English.
+// Placed in the kids-list header right after the mode toggle icons.
+function renderLangToggle() {
+  return h('button', {
+    class: 'ghost lang-toggle',
+    onclick: () => {
+      setLang(getLang() === 'ru' ? 'en' : 'ru');
+      render();
+    }
+  }, t('lang.toggle'));
 }
 
 // Modal overlay asking for admin OR validator credentials, depending on
@@ -408,9 +435,9 @@ function renderModeAuthModal() {
   // Admin target: PIN-only (no username). The session is already an admin —
   // we only gate the UI switch behind the parent's secret PIN.
   // Validator target: username + password (validator creds set by admin).
-  const pinInput = isValidatorTarget ? null : h('input', { type: 'password', inputmode: 'numeric', placeholder: 'PIN', autocomplete: 'off' });
-  const uInput = isValidatorTarget ? h('input', { placeholder: 'Логин' }) : null;
-  const pInput = isValidatorTarget ? h('input', { type: 'password', placeholder: 'Пароль' }) : null;
+  const pinInput = isValidatorTarget ? null : h('input', { type: 'password', inputmode: 'numeric', placeholder: t('auth.pin_placeholder'), autocomplete: 'off' });
+  const uInput = isValidatorTarget ? h('input', { placeholder: t('auth.login_placeholder') }) : null;
+  const pInput = isValidatorTarget ? h('input', { type: 'password', placeholder: t('auth.password_placeholder') }) : null;
 
   const submit = async () => {
     try {
@@ -429,7 +456,7 @@ function renderModeAuthModal() {
         setMode('admin');
       }
     } catch (e) {
-      state.modeAuthError = isValidatorTarget ? 'Неверный логин или пароль' : 'Неверный PIN';
+      state.modeAuthError = isValidatorTarget ? t('auth.wrong_creds') : t('auth.wrong_pin');
       render();
     }
   };
@@ -445,21 +472,21 @@ function renderModeAuthModal() {
   } },
     h('div', { class: 'modal tg-auth' },
       h('div', { class: 'tg-auth-icon' }, isValidatorTarget ? '✅' : '🔑'),
-      h('h2', { class: 'tg-auth-title' }, isValidatorTarget ? 'Вход валидатора' : 'PIN родителя'),
+      h('h2', { class: 'tg-auth-title' }, isValidatorTarget ? t('auth.validator_title') : t('auth.pin_title')),
       h('p', { class: 'tg-auth-sub' },
         isValidatorTarget
-          ? 'Введите логин и пароль валидатора, чтобы подтверждать выполнение заданий.'
-          : 'Введите PIN родителя, чтобы перейти в режим редактирования.'),
+          ? t('auth.validator_sub')
+          : t('auth.pin_sub')),
       isValidatorTarget
         ? [h('div', { class: 'tg-field' }, uInput), h('div', { class: 'tg-field' }, pInput)]
         : h('div', { class: 'tg-field' }, pinInput),
       state.modeAuthError && h('div', { class: 'error', style: 'text-align: center' }, state.modeAuthError),
-      h('button', { class: 'tg-primary', onclick: submit }, 'Войти'),
+      h('button', { class: 'tg-primary', onclick: submit }, t('auth.submit')),
       h('button', { class: 'tg-link', onclick: () => {
         state.showModeAuth = false;
         state.modeAuthError = '';
         render();
-      } }, 'Отмена')
+      } }, t('auth.cancel'))
     )
   );
 }
@@ -468,10 +495,10 @@ function renderModeAuthModal() {
 function readPhotoAsDataURL(file, maxSize = 256) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+    reader.onerror = () => reject(new Error(t('photo.read_error')));
     reader.onload = () => {
       const img = new Image();
-      img.onerror = () => reject(new Error('Не удалось загрузить изображение'));
+      img.onerror = () => reject(new Error(t('photo.load_error')));
       img.onload = () => {
         const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
         const w = Math.round(img.width * scale);
@@ -503,39 +530,39 @@ function renderAvatar(k, size = 40) {
 function renderTemplatesTab({ sectionTitle, addTitle, emptyMsg, addPlaceholder, templates, apiBase, loadFn, tplType }) {
   const addInput = h('input', { placeholder: addPlaceholder, style: 'flex: 1' });
 
-  const renderRow = (t) => {
-    const isEditing = state.editingTemplateId === t.id && state.editingTemplateType === tplType;
+  const renderRow = (tpl) => {
+    const isEditing = state.editingTemplateId === tpl.id && state.editingTemplateType === tplType;
     if (isEditing) {
-      const editInput = h('input', { value: t.title, style: 'flex: 1' });
+      const editInput = h('input', { value: tpl.title, style: 'flex: 1' });
       return h('div', { class: 'kid-row' },
         editInput,
         h('button', { class: 'secondary', onclick: async () => {
           if (!editInput.value.trim()) return;
           try {
-            await api(`${apiBase}/${t.id}`, { method: 'PUT', body: { title: editInput.value.trim() } });
+            await api(`${apiBase}/${tpl.id}`, { method: 'PUT', body: { title: editInput.value.trim() } });
             state.editingTemplateId = null;
             state.editingTemplateType = null;
             await loadFn();
             render();
           } catch (e) { showError(e); }
-        }}, 'Сохранить'),
+        }}, t('templates.save')),
         h('button', { class: 'secondary', onclick: () => {
           state.editingTemplateId = null;
           state.editingTemplateType = null;
           render();
-        }}, 'Отмена')
+        }}, t('templates.cancel'))
       );
     }
     return h('div', { class: 'kid-row' },
-      h('div', { style: 'flex: 1' }, t.title),
-      h('button', { class: 'icon-btn', title: 'Редактировать', onclick: () => {
-        state.editingTemplateId = t.id;
+      h('div', { style: 'flex: 1' }, tpl.title),
+      h('button', { class: 'icon-btn', title: t('templates.edit'), onclick: () => {
+        state.editingTemplateId = tpl.id;
         state.editingTemplateType = tplType;
         render();
       }}, '✏️'),
-      h('button', { class: 'icon-btn danger', title: 'Удалить', onclick: async () => {
+      h('button', { class: 'icon-btn danger', title: t('templates.delete'), onclick: async () => {
         try {
-          await api(`${apiBase}/${t.id}`, { method: 'DELETE' });
+          await api(`${apiBase}/${tpl.id}`, { method: 'DELETE' });
           await loadFn();
           render();
         } catch (e) { showError(e); }
@@ -563,7 +590,7 @@ function renderTemplatesTab({ sectionTitle, addTitle, emptyMsg, addPlaceholder, 
             render();
           } catch (e) { showError(e); }
         }
-      }, 'Добавить')
+      }, t('templates.add'))
     )
   );
 }
@@ -572,16 +599,16 @@ function renderKidsList() {
   const tab = isAdmin() ? (state.kidsListTab || 'kids') : 'kids';
 
   // Inputs for add-kid form (only needed when tab === 'kids')
-  const nameInput = h('input', { placeholder: 'Имя' });
-  const ageInput = h('input', { type: 'number', placeholder: 'Возраст', min: '1', max: '18' });
+  const nameInput = h('input', { placeholder: t('kids.name_placeholder') });
+  const ageInput = h('input', { type: 'number', placeholder: t('kids.age_placeholder'), min: '1', max: '18' });
   const genderSel = h('select', {},
-    h('option', { value: 'м' }, 'Мальчик'),
-    h('option', { value: 'ж' }, 'Девочка')
+    h('option', { value: 'м' }, t('kids.boy')),
+    h('option', { value: 'ж' }, t('kids.girl'))
   );
   // Hold the chosen photo (data URL) on the form input itself so closures see fresh value
   const photoInput = h('input', { type: 'file', accept: 'image/*', style: 'display:none' });
   let newPhoto = null;
-  const photoPreview = h('div', { class: 'photo-preview' }, 'Без фото');
+  const photoPreview = h('div', { class: 'photo-preview' }, t('kids.no_photo'));
   photoInput.onchange = async () => {
     const f = photoInput.files && photoInput.files[0];
     if (!f) return;
@@ -595,32 +622,33 @@ function renderKidsList() {
   return h('div', {},
     h('div', { class: 'header' },
       h('div', { style: 'flex: 1; min-width: 0' },
-        h('h1', { style: 'margin: 0' }, 'Дети'),
+        h('h1', { style: 'margin: 0' }, t('kids.title')),
         renderFamilySwitcher()
       ),
       h('div', {},
         renderModeToggle(),
+        renderLangToggle(),
         isAdmin() && h('button', { class: 'ghost', onclick: async () => {
           try { await loadValidators(); } catch (e) { /* ignore */ }
           try { await loadInvites(); } catch (e) { /* ignore */ }
           state.inviteCopiedAt = null;
           go('settings');
-        } }, 'Настройки'),
-        isAdmin() && h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); suppressTgAutoLogin(); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
+        } }, t('kids.settings')),
+        isAdmin() && h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); suppressTgAutoLogin(); state.user = null; setMode('view'); await bootToLogin(); } }, t('kids.logout'))
       )
     ),
     isAdmin() && h('div', { class: 'settings-tabs' },
-      h('button', { class: 'settings-tab' + (tab === 'kids' ? ' active' : ''), onclick: () => { state.kidsListTab = 'kids'; render(); } }, 'Дети'),
-      h('button', { class: 'settings-tab' + (tab === 'tasks' ? ' active' : ''), onclick: async () => { state.kidsListTab = 'tasks'; await loadTaskTemplates(); render(); } }, 'Задания'),
-      h('button', { class: 'settings-tab' + (tab === 'rewards' ? ' active' : ''), onclick: async () => { state.kidsListTab = 'rewards'; await loadRewardTemplates(); render(); } }, 'Награды')
+      h('button', { class: 'settings-tab' + (tab === 'kids' ? ' active' : ''), onclick: () => { state.kidsListTab = 'kids'; render(); } }, t('kids.tab_kids')),
+      h('button', { class: 'settings-tab' + (tab === 'tasks' ? ' active' : ''), onclick: async () => { state.kidsListTab = 'tasks'; await loadTaskTemplates(); render(); } }, t('kids.tab_tasks')),
+      h('button', { class: 'settings-tab' + (tab === 'rewards' ? ' active' : ''), onclick: async () => { state.kidsListTab = 'rewards'; await loadRewardTemplates(); render(); } }, t('kids.tab_rewards'))
     ),
     tab === 'kids' && isAdmin() && (state.showAddKidForm
       ? h('div', { class: 'card' },
-          h('div', { class: 'section-title' }, 'Добавить ребёнка'),
+          h('div', { class: 'section-title' }, t('kids.add_kid_title')),
           h('div', { class: 'row', style: 'margin-bottom: 8px' }, nameInput, ageInput, genderSel),
           h('div', { class: 'row', style: 'margin-bottom: 8px; align-items: center' },
             photoPreview,
-            h('button', { class: 'secondary', onclick: () => photoInput.click() }, 'Выбрать фото'),
+            h('button', { class: 'secondary', onclick: () => photoInput.click() }, t('kids.choose_photo')),
             photoInput
           ),
           state.error && h('div', { class: 'error' }, state.error),
@@ -629,11 +657,11 @@ function renderKidsList() {
               state.showAddKidForm = false;
               state.error = null;
               render();
-            } }, 'Отмена'),
+            } }, t('kids.cancel')),
             h('button', {
               onclick: async () => {
                 try {
-                  if (!nameInput.value || !ageInput.value) throw new Error('Заполните имя и возраст');
+                  if (!nameInput.value || !ageInput.value) throw new Error(t('kids.name_age_required'));
                   await api('/api/kids', { method: 'POST', body: { name: nameInput.value, age: ageInput.value, gender: genderSel.value, photo: newPhoto } });
                   state.showAddKidForm = false;
                   state.error = null;
@@ -641,34 +669,34 @@ function renderKidsList() {
                   render();
                 } catch (e) { showError(e); }
               }
-            }, 'Добавить')
+            }, t('kids.add_button'))
           )
         )
       : h('div', { class: 'card', style: 'text-align: center' },
-          h('button', { onclick: () => { state.showAddKidForm = true; render(); } }, 'Добавить ребёнка')
+          h('button', { onclick: () => { state.showAddKidForm = true; render(); } }, t('kids.add_kid'))
         )
     ),
     tab === 'kids' && h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, 'Список'),
+      h('div', { class: 'section-title' }, t('kids.list_title')),
       state.kids.length === 0
-        ? h('div', { class: 'empty' }, isAdmin() ? 'Пока никого. Добавьте первого ребёнка выше.' : 'Список детей пуст. Переключитесь в режим «Родитель», чтобы добавить.')
+        ? h('div', { class: 'empty' }, isAdmin() ? t('kids.empty_admin') : t('kids.empty_view'))
         : state.kids.map(k => renderKidRow(k))
     ),
     tab === 'tasks' && renderTemplatesTab({
-      sectionTitle: 'Список заданий',
-      addTitle: 'Добавить задание',
-      emptyMsg: 'Пока нет заданий. Добавьте ниже.',
-      addPlaceholder: 'Название задания',
+      sectionTitle: t('templates.task.section'),
+      addTitle: t('templates.task.add_title'),
+      emptyMsg: t('templates.task.empty'),
+      addPlaceholder: t('templates.task.placeholder'),
       templates: state.taskTemplates || [],
       apiBase: '/api/task-templates',
       loadFn: loadTaskTemplates,
       tplType: 'task'
     }),
     tab === 'rewards' && renderTemplatesTab({
-      sectionTitle: 'Список наград',
-      addTitle: 'Добавить награду',
-      emptyMsg: 'Пока нет наград. Добавьте ниже.',
-      addPlaceholder: 'Название награды',
+      sectionTitle: t('templates.reward.section'),
+      addTitle: t('templates.reward.add_title'),
+      emptyMsg: t('templates.reward.empty'),
+      addPlaceholder: t('templates.reward.placeholder'),
       templates: state.rewardTemplates || [],
       apiBase: '/api/reward-templates',
       loadFn: loadRewardTemplates,
@@ -688,8 +716,8 @@ function renderKidRow(k) {
     const nameInput = h('input', { value: k.name });
     const ageInput = h('input', { type: 'number', min: '1', max: '18', value: k.age });
     const genderSel = h('select', {},
-      h('option', { value: 'м' }, 'Мальчик'),
-      h('option', { value: 'ж' }, 'Девочка')
+      h('option', { value: 'м' }, t('kids.boy')),
+      h('option', { value: 'ж' }, t('kids.girl'))
     );
     genderSel.value = k.gender;
 
@@ -703,7 +731,7 @@ function renderKidRow(k) {
       if (pendingPhoto) {
         previewWrap.append(h('img', { src: pendingPhoto, style: 'width:48px;height:48px;border-radius:50%;object-fit:cover' }));
       } else {
-        previewWrap.append(document.createTextNode('Без фото'));
+        previewWrap.append(document.createTextNode(t('kids.no_photo')));
       }
     };
     refreshPreview();
@@ -722,8 +750,8 @@ function renderKidRow(k) {
         h('div', { class: 'row', style: 'margin-bottom: 6px' }, nameInput, ageInput, genderSel),
         h('div', { class: 'row', style: 'margin-bottom: 6px; align-items: center' },
           previewWrap,
-          h('button', { class: 'secondary', onclick: () => photoInput.click() }, 'Сменить фото'),
-          k.photo || pendingPhoto ? h('button', { class: 'icon-btn danger', title: 'Убрать фото', onclick: () => {
+          h('button', { class: 'secondary', onclick: () => photoInput.click() }, t('kids.change_photo')),
+          k.photo || pendingPhoto ? h('button', { class: 'icon-btn danger', title: t('kids.remove_photo'), onclick: () => {
             pendingPhoto = null;
             photoTouched = true;
             refreshPreview();
@@ -736,10 +764,10 @@ function renderKidRow(k) {
             state.editKidId = null;
             state.editKidError = '';
             render();
-          } }, 'Отмена'),
+          } }, t('kids.cancel')),
           h('button', { onclick: async () => {
             try {
-              if (!nameInput.value || !ageInput.value) throw new Error('Заполните имя и возраст');
+              if (!nameInput.value || !ageInput.value) throw new Error(t('kids.name_age_required'));
               const body = { name: nameInput.value, age: ageInput.value, gender: genderSel.value };
               if (photoTouched) body.photo = pendingPhoto; // null = clear, string = set
               await api(`/api/kids/${k.id}`, { method: 'PUT', body });
@@ -751,7 +779,7 @@ function renderKidRow(k) {
               state.editKidError = e.message;
               render();
             }
-          } }, 'Сохранить')
+          } }, t('kids.save'))
         )
       )
     );
@@ -764,12 +792,14 @@ function renderKidRow(k) {
   },
     renderAvatar(k, 44),
     h('div', { style: 'flex: 1; margin-left: 12px' },
-      h('div', { style: 'font-weight: 600' }, `${k.name} (${k.age}, ${k.gender})`),
-      h('div', { class: 'kid-meta' }, total ? `Сегодня: ${done}/${total} (${pct}%)` : 'На сегодня заданий нет')
+      h('div', { style: 'font-weight: 600' }, `${k.name} (${k.age}, ${tGender(k.gender)})`),
+      h('div', { class: 'kid-meta' }, total
+        ? t('kids.today_progress').replace('{done}', done).replace('{total}', total).replace('{pct}', pct)
+        : t('kids.no_tasks_today'))
     ),
     admin && h('button', {
       class: 'icon-btn',
-      title: 'Редактировать',
+      title: t('kids.edit_title'),
       onclick: (e) => {
         e.stopPropagation();
         state.editKidId = k.id;
@@ -779,10 +809,10 @@ function renderKidRow(k) {
     }, '✎'),
     admin && h('button', {
       class: 'icon-btn danger',
-      title: 'Удалить',
+      title: t('kids.delete_title'),
       onclick: async (e) => {
         e.stopPropagation();
-        if (!confirm(`Удалить профиль ${k.name}? Все задания и награды будут удалены.`)) return;
+        if (!confirm(t('kids.delete_confirm').replace('{name}', k.name))) return;
         try {
           await api(`/api/kids/${k.id}`, { method: 'DELETE' });
           await loadKids();
@@ -866,6 +896,9 @@ function renderCalendarStrip(kid, todayDate) {
   const calMap = new Map();
   for (const c of (state.currentKid.calendar || [])) calMap.set(c.date, c);
 
+  const dowShort = t('cal.dow_short');
+  const monthShort = t('cal.month_short');
+
   const cells = [];
   for (let i = 0; i < windowDays; i++) {
     const date = shiftDate(anchor, i);
@@ -878,14 +911,14 @@ function renderCalendarStrip(kid, todayDate) {
 
     const [y, m, d] = date.split('-').map(Number);
     const dt = new Date(y, m - 1, d);
-    const dow = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][dt.getDay()];
+    const dow = dowShort[dt.getDay()];
 
     const markers = [];
     if (info && info.total > 0) markers.push(h('span', { class: 'cal-dot cal-dot-tasks' }));
     if (info && info.claimed) markers.push(h('span', { class: 'cal-dot cal-dot-reward' }));
 
     // Show short month label for the first day of month so transitions are visible
-    const monthAbbr = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'][m - 1];
+    const monthAbbr = monthShort[m - 1];
     const monthBadge = d === 1 ? h('div', { class: 'cal-month-badge' }, monthAbbr) : null;
 
     cells.push(h('button', {
@@ -900,11 +933,16 @@ function renderCalendarStrip(kid, todayDate) {
   }
 
   // Header: full selected date (day month year, weekday) + live clock
-  const monthGen = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
-  const dowFull = ['воскресенье','понедельник','вторник','среда','четверг','пятница','суббота'];
+  const monthGen = t('cal.month_gen');
+  const dowFull = t('cal.dow_full');
+  const dateFmt = t('cal.date_format');
   const [sy, sm, sd] = selected.split('-').map(Number);
   const selDt = new Date(sy, sm - 1, sd);
-  const headerLabel = `${sd} ${monthGen[sm - 1]} ${sy} г., ${dowFull[selDt.getDay()]}`;
+  const headerLabel = dateFmt
+    .replace('{day}', sd)
+    .replace('{month}', monthGen[sm - 1])
+    .replace('{year}', sy)
+    .replace('{dow}', dowFull[selDt.getDay()]);
   const clockEl = h('span', { class: 'cal-clock' }, formatClock(new Date()));
   startClockTicker();
 
@@ -955,20 +993,20 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
     if (!reward) return null;
     if (claimed) {
       return h('div', { class: 'card' },
-        h('div', { class: 'section-title' }, '🏆 Награда'),
+        h('div', { class: 'section-title' }, t('reward.title_trophy')),
         h('div', { class: 'reward claimed' },
           h('div', { style: 'font-size: 40px' }, '🏆'),
           h('h3', {}, reward.title),
-          h('div', { class: 'muted' }, 'Награда получена')
+          h('div', { class: 'muted' }, t('reward.claimed_label'))
         )
       );
     }
     return h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, '🎁 Награда'),
+      h('div', { class: 'section-title' }, t('reward.title_gift')),
       h('div', { class: 'reward locked' },
         h('div', { style: 'font-size: 40px' }, '🔒'),
         h('h3', {}, reward.title),
-        h('div', { class: 'muted' }, 'Не получена')
+        h('div', { class: 'muted' }, t('reward.not_claimed'))
       )
     );
   }
@@ -979,42 +1017,42 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
     if (!admin) {
       if (!reward) return null;
       return h('div', { class: 'card' },
-        h('div', { class: 'section-title' }, '🎁 Награда'),
+        h('div', { class: 'section-title' }, t('reward.title_gift')),
         h('div', { class: 'reward locked' },
           h('div', { style: 'font-size: 48px' }, '🎁'),
-          h('h3', {}, 'Сюрприз!'),
-          h('div', { class: 'muted' }, 'Награда уже назначена — откроется в этот день')
+          h('h3', {}, t('reward.surprise')),
+          h('div', { class: 'muted' }, t('reward.surprise_opens'))
         )
       );
     }
     const inner = [];
     if (!reward) {
-      const newInput = comboInput('Название награды', (state.rewardTemplates || []).map(t => t.title));
+      const newInput = comboInput(t('templates.reward.placeholder'), (state.rewardTemplates || []).map(r => r.title));
       inner.push(
-        h('div', { class: 'section-title' }, '🎁 Награда на ' + day.date),
-        h('div', { class: 'muted', style: 'margin-bottom: 8px' }, 'Награда ещё не назначена.'),
+        h('div', { class: 'section-title' }, t('reward.day_title').replace('{date}', day.date)),
+        h('div', { class: 'muted', style: 'margin-bottom: 8px' }, t('reward.not_assigned_yet')),
         h('div', { class: 'row' },
           newInput,
           h('button', { onclick: async () => {
             if (!newInput.value.trim()) return;
             await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: { date: day.date, title: newInput.value.trim() } });
             reloadKid();
-          } }, 'Назначить')
+          } }, t('reward.assign'))
         )
       );
     } else {
       // Future reward — admin sees the title (planning view)
       inner.push(
-        h('div', { class: 'section-title' }, '🎁 Награда на ' + day.date),
+        h('div', { class: 'section-title' }, t('reward.day_title').replace('{date}', day.date)),
         h('div', { class: 'reward' },
           h('div', { style: 'font-size: 40px' }, '🎁'),
           h('h3', {}, reward.title),
-          h('div', { class: 'muted' }, 'Откроется в день, когда задания будут выполнены')
+          h('div', { class: 'muted' }, t('reward.opens_on_day'))
         )
       );
-      const editInput = comboInput('Новое название награды', (state.rewardTemplates || []).map(t => t.title));
+      const editInput = comboInput(t('reward.new_placeholder'), (state.rewardTemplates || []).map(r => r.title));
       inner.push(
-        h('div', { class: 'section-title' }, 'Изменить награду'),
+        h('div', { class: 'section-title' }, t('reward.edit_title')),
         h('div', { class: 'row' },
           editInput,
           h('button', { class: 'secondary', onclick: async () => {
@@ -1022,7 +1060,7 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
             await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: { date: day.date, title: editInput.value.trim() } });
             editInput.value = '';
             reloadKid();
-          } }, 'Сохранить')
+          } }, t('reward.save'))
         )
       );
     }
@@ -1034,11 +1072,11 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
   // a reward is just missing (vs. UI being broken).
   if (!reward && !admin) {
     return h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, '🎁 Награда дня'),
+      h('div', { class: 'section-title' }, t('reward.daily_title')),
       h('div', { class: 'reward locked' },
         h('div', { style: 'font-size: 48px' }, '🎁'),
         h('h3', {}, '******'),
-        h('div', { class: 'muted' }, 'Награда на сегодня пока не выбрана')
+        h('div', { class: 'muted' }, t('reward.not_selected'))
       )
     );
   }
@@ -1047,47 +1085,47 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
 
   if (!reward) {
     // Admin mode without reward yet: show creation input only
-    const newInput = comboInput('Название награды', (state.rewardTemplates || []).map(t => t.title));
+    const newInput = comboInput(t('templates.reward.placeholder'), (state.rewardTemplates || []).map(r => r.title));
     inner.push(
-      h('div', { class: 'section-title' }, '🎁 Награда дня'),
-      h('div', { class: 'muted', style: 'margin-bottom: 8px' }, 'Награда на сегодня ещё не назначена.'),
+      h('div', { class: 'section-title' }, t('reward.daily_title')),
+      h('div', { class: 'muted', style: 'margin-bottom: 8px' }, t('reward.not_assigned_today')),
       h('div', { class: 'row' },
         newInput,
         h('button', { onclick: async () => {
           if (!newInput.value.trim()) return;
           await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: { title: newInput.value.trim() } });
           reloadKid();
-        } }, 'Назначить')
+        } }, t('reward.assign'))
       )
     );
   } else if (!allDone) {
     // Tasks not all done → reward is hidden from kid; admin always sees the title.
     inner.push(
-      h('div', { class: 'section-title' }, '🎁 Награда дня'),
+      h('div', { class: 'section-title' }, t('reward.daily_title')),
       admin
         ? h('div', { class: 'reward' },
             h('div', { style: 'font-size: 40px' }, '🎁'),
             h('h3', {}, reward.title),
-            h('div', { class: 'muted' }, 'Откроется, когда все задания будут выполнены')
+            h('div', { class: 'muted' }, t('reward.locked_until_done'))
           )
         : h('div', { class: 'reward locked' },
             h('div', { style: 'font-size: 48px' }, '🎁'),
-            h('h3', {}, 'Сюрприз!'),
-            h('div', { class: 'muted' }, 'Награда откроется, когда все задания будут выполнены')
+            h('h3', {}, t('reward.surprise')),
+            h('div', { class: 'muted' }, t('reward.locked_until_done'))
           )
     );
   } else if (claimed) {
     inner.push(
-      h('div', { class: 'section-title' }, '🏆 Награда дня'),
+      h('div', { class: 'section-title' }, t('reward.trophy_daily')),
       h('div', { class: 'reward claimed' },
         h('div', { style: 'font-size: 40px' }, '🏆'),
         h('h3', {}, reward.title),
-        h('div', { class: 'muted' }, 'Награда получена!')
+        h('div', { class: 'muted' }, t('reward.received'))
       )
     );
   } else if (!unlocked) {
     // 100% done but not unlocked yet — show reveal button (or login form if requested)
-    inner.push(h('div', { class: 'section-title' }, '🎁 Награда дня'));
+    inner.push(h('div', { class: 'section-title' }, t('reward.daily_title')));
 
     if (admin) {
       // Admin already authorized — title is always visible. No claim button:
@@ -1096,11 +1134,11 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
         h('div', { class: 'reward' },
           h('div', { style: 'font-size: 40px' }, '🎁'),
           h('h3', {}, reward.title),
-          h('div', { class: 'muted' }, 'Все задания выполнены — можно вручать!')
+          h('div', { class: 'muted' }, t('reward.all_done_admin'))
         )
       );
     } else if (state.showUnlockForm) {
-      const pinInput = h('input', { type: 'password', inputmode: 'numeric', placeholder: 'PIN', autocomplete: 'off' });
+      const pinInput = h('input', { type: 'password', inputmode: 'numeric', placeholder: t('auth.pin_placeholder'), autocomplete: 'off' });
       const submitUnlock = async () => {
         try {
           await api('/api/verify-pin', { method: 'POST', body: { pin: pinInput.value } });
@@ -1109,7 +1147,7 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
           state.unlockError = '';
           render();
         } catch (e) {
-          state.unlockError = 'Неверный PIN';
+          state.unlockError = t('reward.wrong_pin');
           render();
         }
       };
@@ -1117,7 +1155,7 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
       inner.push(
         h('div', { class: 'reward unlock-form' },
           h('div', { style: 'font-size: 32px' }, '🔐'),
-          h('div', { style: 'font-weight: 600; margin-bottom: 12px' }, 'Введите PIN родителя'),
+          h('div', { style: 'font-weight: 600; margin-bottom: 12px' }, t('reward.enter_pin')),
           h('div', { class: 'tg-field' }, pinInput),
           state.unlockError && h('div', { class: 'error', style: 'text-align: center' }, state.unlockError),
           h('div', { class: 'row' },
@@ -1125,8 +1163,8 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
               state.showUnlockForm = false;
               state.unlockError = '';
               render();
-            } }, 'Отмена'),
-            h('button', { onclick: submitUnlock }, 'Открыть')
+            } }, t('reward.cancel')),
+            h('button', { onclick: submitUnlock }, t('reward.open'))
           )
         )
       );
@@ -1137,8 +1175,8 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
       inner.push(
         h('div', { class: 'reward' },
           h('div', { style: 'font-size: 40px' }, '🎁'),
-          h('h3', {}, 'Все задания выполнены!'),
-          h('div', { class: 'muted', style: 'margin-bottom: 10px' }, 'Награду открывает родитель'),
+          h('h3', {}, t('reward.all_done')),
+          h('div', { class: 'muted', style: 'margin-bottom: 10px' }, t('reward.parent_opens')),
           h('button', { onclick: () => {
             if (!hasPin) {
               state.rewardUnlocked = true;
@@ -1148,7 +1186,7 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
             state.showUnlockForm = true;
             state.unlockError = '';
             render();
-          } }, 'Открыть награду')
+          } }, t('reward.open_reward'))
         )
       );
     }
@@ -1156,16 +1194,16 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
     // 100% done and unlocked (password accepted) — show claim button.
     // In view mode the title stays hidden as a surprise; admin always sees it.
     inner.push(
-      h('div', { class: 'section-title' }, '🎁 Награда дня'),
+      h('div', { class: 'section-title' }, t('reward.daily_title')),
       h('div', { class: 'reward' },
         h('div', { style: 'font-size: 48px' }, '🎁'),
-        h('h3', {}, admin ? reward.title : 'Сюрприз готов!'),
-        h('div', { class: 'muted', style: 'margin-bottom: 10px' }, 'Все задания выполнены — можно вручать!'),
+        h('h3', {}, admin ? reward.title : t('reward.surprise_ready')),
+        h('div', { class: 'muted', style: 'margin-bottom: 10px' }, t('reward.ready_to_give')),
         h('button', { onclick: async () => {
           await api(`/api/rewards/${reward.id}/claim`, { method: 'POST' });
           state.rewardUnlocked = false; // reset, since claimed status now persists
           reloadKid();
-        } }, 'Вручить награду')
+        } }, t('reward.give_reward'))
       )
     );
   }
@@ -1173,9 +1211,9 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
   // Admin extra: edit reward title (only when reward exists). Input has no
   // prefilled value to avoid leaking the title to anyone glancing at the screen.
   if (admin && reward) {
-    const editInput = comboInput('Новое название награды', (state.rewardTemplates || []).map(t => t.title));
+    const editInput = comboInput(t('reward.new_placeholder'), (state.rewardTemplates || []).map(r => r.title));
     inner.push(
-      h('div', { class: 'section-title' }, 'Изменить награду'),
+      h('div', { class: 'section-title' }, t('reward.edit_title')),
       h('div', { class: 'row' },
         editInput,
         h('button', { class: 'secondary', onclick: async () => {
@@ -1183,7 +1221,7 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
           await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: { title: editInput.value.trim() } });
           editInput.value = '';
           reloadKid();
-        } }, 'Сохранить')
+        } }, t('reward.save'))
       )
     );
   }
@@ -1206,37 +1244,37 @@ function renderKidDynInner() {
   const canToggleTasks = dayType === 'today';
 
   const emptyMsg =
-    dayType === 'today' ? (admin ? 'Заданий на сегодня нет. Добавьте ниже.' : 'На сегодня заданий ещё нет.')
-    : dayType === 'past' ? 'В этот день заданий не было.'
-    : (admin ? 'Заданий ещё нет. Добавьте ниже.' : 'Этот день ещё не наступил.');
+    dayType === 'today' ? (admin ? t('tasks.empty_today_admin') : t('tasks.empty_today_view'))
+    : dayType === 'past' ? t('tasks.empty_past')
+    : (admin ? t('tasks.empty_future_admin') : t('tasks.empty_future_view'));
 
   const taskInput = comboInput(
-    dayType === 'today' ? 'Новое задание на сегодня' : `Новое задание на ${day.date}`,
-    (state.taskTemplates || []).map(t => t.title)
+    dayType === 'today' ? t('tasks.new_today') : t('tasks.new_date').replace('{date}', day.date),
+    (state.taskTemplates || []).map(tpl => tpl.title)
   );
 
-  const taskEls = day.tasks.map(t => {
+  const taskEls = day.tasks.map(task => {
     // Today: real checkbox. Past: show ✓ / ✕ marker (frozen). Future: lock icon.
     let marker;
     if (canToggleTasks) {
       marker = h('input', {
         type: 'checkbox',
         // Show checked while pending OR approved — kid sees their tick stays
-        checked: !!t.completed || !!t.pending,
-        onchange: async () => { await api(`/api/tasks/${t.id}/toggle`, { method: 'POST' }); reloadKid(); }
+        checked: !!task.completed || !!task.pending,
+        onchange: async () => { await api(`/api/tasks/${task.id}/toggle`, { method: 'POST' }); reloadKid(); }
       });
     } else if (dayType === 'future') {
       marker = h('div', { class: 'task-marker future' }, '🔒');
     } else {
       // past, or today in view mode — show current state without checkbox
-      marker = h('div', { class: 'task-marker past ' + (t.completed ? 'done' : 'missed') }, t.completed ? '✓' : '○');
+      marker = h('div', { class: 'task-marker past ' + (task.completed ? 'done' : 'missed') }, task.completed ? '✓' : '○');
     }
-    return h('div', { class: 'task' + (t.completed ? ' done' : '') + (t.pending ? ' pending' : '') + (!canToggleTasks ? ' readonly' : '') },
+    return h('div', { class: 'task' + (task.completed ? ' done' : '') + (task.pending ? ' pending' : '') + (!canToggleTasks ? ' readonly' : '') },
       marker,
-      h('div', { class: 'title' }, t.title),
-      t.pending && h('span', { class: 'task-pending-badge', title: 'Ждёт подтверждения валидатора' }, 'На проверке'),
+      h('div', { class: 'title' }, task.title),
+      task.pending && h('span', { class: 'task-pending-badge', title: t('tasks.pending_badge') }, t('tasks.pending_badge')),
       canEditTasks && admin && h('button', { class: 'del', onclick: async () => {
-        await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
+        await api(`/api/tasks/${task.id}`, { method: 'DELETE' });
         reloadKid();
       } }, '✕')
     );
@@ -1256,7 +1294,7 @@ function renderKidDynInner() {
           taskInput.value = '';
           reloadKid();
         }
-      }, 'Добавить')
+      }, t('tasks.add'))
     )
   );
 }
@@ -1267,27 +1305,27 @@ function renderKidDynOuter() {
   const day = state.selectedDay;
   const dayType = dayTypeOf(day.date, today.date);
   const total = day.tasks.length;
-  const done = day.tasks.filter(t => t.completed).length;
+  const done = day.tasks.filter(task => task.completed).length;
   const allDone = total > 0 && done === total;
   const admin = isAdmin();
 
   return h('div', { id: 'kid-dyn-outer' },
     renderRewardSection(kid, day, allDone, admin, dayType),
     admin && h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, 'Статистика'),
-      h('div', {}, `Дней с заданиями: ${stats.days_with_tasks || 0}`),
-      h('div', {}, `Всего заданий: ${stats.total_tasks || 0}, выполнено: ${stats.completed_tasks || 0}`),
-      h('div', {}, `Наград получено: ${stats.rewards_claimed || 0}`)
+      h('div', { class: 'section-title' }, t('stats.title')),
+      h('div', {}, t('stats.days_with_tasks').replace('{n}', stats.days_with_tasks || 0)),
+      h('div', {}, t('stats.total_tasks').replace('{total}', stats.total_tasks || 0).replace('{done}', stats.completed_tasks || 0)),
+      h('div', {}, t('stats.rewards_claimed').replace('{n}', stats.rewards_claimed || 0))
     ),
     admin && h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, 'История'),
+      h('div', { class: 'section-title' }, t('history.title')),
       history.length === 0
-        ? h('div', { class: 'empty' }, 'Пока пусто')
+        ? h('div', { class: 'empty' }, t('history.empty'))
         : history.map(d => h('div', { class: 'history-day' },
             h('div', { class: 'date' }, d.date),
             h('div', { class: 'summary' },
-              `${d.done || 0}/${d.total} заданий` +
-              (d.reward ? ` · награда: ${d.reward.title}${d.reward.claimed ? ' ✓' : ''}` : '')
+              t('history.tasks').replace('{done}', d.done || 0).replace('{total}', d.total) +
+              (d.reward ? t('history.reward').replace('{title}', d.reward.title) + (d.reward.claimed ? t('history.reward_claimed') : '') : '')
             )
           ))
     )
@@ -1300,16 +1338,16 @@ function renderKid() {
 
   return h('div', {},
     h('div', { class: 'header' },
-      h('button', { class: 'ghost', onclick: async () => { await loadKids(); go('kids'); } }, '‹ Назад'),
+      h('button', { class: 'ghost', onclick: async () => { await loadKids(); go('kids'); } }, t('kid.back')),
       h('div', { style: 'flex:1' }),
       h('div', {},
         renderModeToggle(),
         admin && h('button', { class: 'ghost danger', onclick: async () => {
-          if (!confirm(`Удалить профиль ${kid.name}?`)) return;
+          if (!confirm(t('kid.delete_confirm').replace('{name}', kid.name))) return;
           await api(`/api/kids/${kid.id}`, { method: 'DELETE' });
           await loadKids();
           go('kids');
-        } }, 'Удалить')
+        } }, t('kid.delete'))
       )
     ),
 
@@ -1318,7 +1356,7 @@ function renderKid() {
         renderAvatar(kid, 48),
         h('div', {},
           h('div', { style: 'font-weight:600;font-size:16px' }, kid.name),
-          h('div', { class: 'muted' }, `${kid.age} лет, ${kid.gender}`)
+          h('div', { class: 'muted' }, t('kid.age_gender').replace('{age}', kid.age).replace('{gender}', tGender(kid.gender)))
         )
       ),
       renderCalendarStrip(kid, today.date),
@@ -1336,12 +1374,11 @@ async function loadValidators() {
 // Manual creation of a validator account by login/password (legacy flow,
 // useful for non-Telegram or browser-only validators).
 function renderValidatorAddBlock() {
-  const newUser = h('input', { placeholder: 'Логин валидатора' });
-  const newPass = h('input', { type: 'password', placeholder: 'Пароль' });
+  const newUser = h('input', { placeholder: t('validators.login_placeholder') });
+  const newPass = h('input', { type: 'password', placeholder: t('validators.password_placeholder') });
   return h('div', { class: 'card' },
-    h('div', { class: 'section-title' }, 'Добавить валидатора по логину и паролю'),
-    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
-      'Альтернатива приглашению через Telegram: создайте аккаунт с логином/паролем и передайте их валидатору. Подходит, если валидатор будет заходить из браузера.'),
+    h('div', { class: 'section-title' }, t('validators.add_title')),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t('validators.add_hint')),
     h('div', { class: 'row', style: 'margin-bottom: 8px' }, newUser, newPass),
     h('button', {
       onclick: async () => {
@@ -1353,7 +1390,7 @@ function renderValidatorAddBlock() {
           render();
         } catch (e) { showError(e); }
       }
-    }, 'Добавить')
+    }, t('validators.add'))
   );
 }
 
@@ -1362,33 +1399,36 @@ function renderValidatorAddBlock() {
 function renderValidatorsListBlock() {
   const list = state.validators || [];
   return h('div', { class: 'card' },
-    h('div', { class: 'section-title' }, 'Валидаторы семьи'),
+    h('div', { class: 'section-title' }, t('validators.list_title')),
     list.length === 0
-      ? h('div', { class: 'empty' }, 'Пока нет валидаторов.')
+      ? h('div', { class: 'empty' }, t('validators.empty'))
       : h('div', {}, ...list.map(v => {
           const isTg = v.type === 'tg_member';
           return h('div', { class: 'kid-row' },
             h('div', { style: 'flex: 1' },
               h('div', { style: 'font-weight: 600' }, v.username),
-              h('div', { class: 'kid-meta' }, isTg ? 'Гость через Telegram' : (v.tg_linked ? 'Telegram привязан' : 'Telegram не привязан'))
+              h('div', { class: 'kid-meta' }, isTg ? t('validators.tg_guest') : (v.tg_linked ? t('validators.tg_linked') : t('validators.tg_not_linked')))
             ),
             !isTg && h('button', {
               class: 'icon-btn',
-              title: 'Сменить пароль',
+              title: t('validators.change_password_title'),
               onclick: async () => {
-                const p = prompt(`Новый пароль для ${v.username}:`);
+                const p = prompt(t('validators.change_password_prompt').replace('{name}', v.username));
                 if (!p) return;
                 try {
                   await api(`/api/validators/${v.id}/password`, { method: 'POST', body: { password: p } });
-                  alert('Пароль изменён');
+                  alert(t('validators.password_changed'));
                 } catch (e) { showError(e); }
               }
             }, '🔑'),
             h('button', {
               class: 'icon-btn danger',
-              title: isTg ? 'Отозвать доступ' : 'Удалить',
+              title: isTg ? t('validators.revoke_title') : t('validators.delete_title'),
               onclick: async () => {
-                if (!confirm(isTg ? `Отозвать доступ у ${v.username}?` : `Удалить валидатора ${v.username}?`)) return;
+                const msg = isTg
+                  ? t('validators.revoke_confirm').replace('{name}', v.username)
+                  : t('validators.delete_confirm').replace('{name}', v.username);
+                if (!confirm(msg)) return;
                 try {
                   if (isTg) {
                     await api(`/api/members/${v.id}`, { method: 'DELETE' });
@@ -1413,7 +1453,7 @@ function renderInvitesBlock() {
   const list = state.invites || [];
   // Share helpers — copy to clipboard, or open Telegram share picker.
   const shareViaTelegram = (url) => {
-    const msg = encodeURIComponent('Приглашение в Happy Kids: подтверждайте выполнение заданий моего ребёнка');
+    const msg = encodeURIComponent(t('invites.share_msg'));
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${msg}`;
     if (tg && tg.openTelegramLink) tg.openTelegramLink(shareUrl);
     else window.open(shareUrl, '_blank');
@@ -1433,24 +1473,23 @@ function renderInvitesBlock() {
   };
 
   return h('div', { class: 'card' },
-    h('div', { class: 'section-title' }, 'Пригласить валидатора через Telegram'),
-    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
-      'Создайте ссылку и отправьте её любому пользователю Telegram. Открыв её, он станет валидатором в вашей семье. Ссылка постоянная и многоразовая — можно пригласить нескольких людей по одной ссылке.'),
+    h('div', { class: 'section-title' }, t('invites.title')),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t('invites.hint')),
     list.length === 0
-      ? h('div', { class: 'empty' }, 'Пока нет приглашений.')
+      ? h('div', { class: 'empty' }, t('invites.empty'))
       : h('div', {}, ...list.map(inv => h('div', { class: 'kid-row', style: 'flex-direction: column; gap: 6px; align-items: stretch' },
           h('div', {},
-            h('div', { style: 'font-family: monospace; font-size: 12px; word-break: break-all' }, inv.url || `(нет URL: бот не запущен)`),
-            h('div', { class: 'kid-meta' }, 'Создано: ' + (inv.created_at || ''))
+            h('div', { style: 'font-family: monospace; font-size: 12px; word-break: break-all' }, inv.url || t('invites.no_url')),
+            h('div', { class: 'kid-meta' }, t('invites.created_at').replace('{date}', inv.created_at || ''))
           ),
           h('div', { style: 'display: flex; gap: 6px; align-items: center' },
-            inv.url && h('button', { class: 'secondary', onclick: () => copyToClipboard(inv.url) }, 'Копировать'),
-            inv.url && h('button', { class: 'secondary', onclick: () => shareViaTelegram(inv.url) }, 'Поделиться'),
+            inv.url && h('button', { class: 'secondary', onclick: () => copyToClipboard(inv.url) }, t('invites.copy')),
+            inv.url && h('button', { class: 'secondary', onclick: () => shareViaTelegram(inv.url) }, t('invites.share')),
             h('button', {
               class: 'icon-btn danger',
-              title: 'Отозвать',
+              title: t('invites.revoke_title'),
               onclick: async () => {
-                if (!confirm('Отозвать приглашение? После отзыва ссылка перестанет работать.')) return;
+                if (!confirm(t('invites.revoke_confirm'))) return;
                 try {
                   await api(`/api/invites/${inv.id}`, { method: 'DELETE' });
                   await loadInvites();
@@ -1460,7 +1499,7 @@ function renderInvitesBlock() {
             }, '🗑')
           )
         ))),
-    state.inviteCopiedAt && h('div', { class: 'flash-success' }, 'Ссылка скопирована'),
+    state.inviteCopiedAt && h('div', { class: 'flash-success' }, t('invites.copied')),
     h('button', {
       style: 'margin-top: 10px',
       onclick: async () => {
@@ -1470,7 +1509,7 @@ function renderInvitesBlock() {
           render();
         } catch (e) { showError(e); }
       }
-    }, 'Создать ссылку-приглашение')
+    }, t('invites.create'))
   );
 }
 
@@ -1479,23 +1518,22 @@ function renderTelegramBlock() {
   // user can't bind anyway; we hide the block so it doesn't confuse.
   if (!tgInitData) {
     return h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, 'Telegram'),
+      h('div', { class: 'section-title' }, t('telegram.title')),
       h('p', { class: 'muted' },
         state.user && state.user.tg_linked
-          ? 'Аккаунт уже привязан к Telegram.'
-          : 'Откройте приложение через Telegram, чтобы привязать аккаунт.')
+          ? t('telegram.already_linked')
+          : t('telegram.open_in_tg'))
     );
   }
   if (state.user && state.user.tg_linked) {
     return h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, 'Telegram'),
-      h('p', { class: 'muted' }, '✅ Аккаунт привязан. В следующий раз вход будет автоматическим.')
+      h('div', { class: 'section-title' }, t('telegram.title')),
+      h('p', { class: 'muted' }, t('telegram.linked_success'))
     );
   }
   return h('div', { class: 'card' },
-    h('div', { class: 'section-title' }, 'Telegram'),
-    h('p', { class: 'muted', style: 'margin-bottom: 10px' },
-      'Привяжите этот аккаунт к Telegram, чтобы входить без пароля.'),
+    h('div', { class: 'section-title' }, t('telegram.title')),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t('telegram.link_hint')),
     state.tgLinkError && h('div', { class: 'error' }, state.tgLinkError),
     h('button', {
       onclick: async () => {
@@ -1503,16 +1541,16 @@ function renderTelegramBlock() {
         if (r && r.action === 'bound') {
           state.user.tg_linked = true;
           state.tgLinkError = '';
-          alert('Telegram успешно привязан');
+          alert(t('telegram.link_ok'));
         } else if (r && r.action === 'login') {
           // Already linked elsewhere (shouldn't normally happen here).
           state.user.tg_linked = true;
         } else {
-          state.tgLinkError = 'Не удалось привязать. Возможно, этот Telegram уже занят другим аккаунтом.';
+          state.tgLinkError = t('telegram.link_err');
         }
         render();
       }
-    }, 'Привязать Telegram')
+    }, t('telegram.link_btn'))
   );
 }
 
@@ -1531,31 +1569,29 @@ function flashPinSuccess(msg) {
 }
 
 // Map server-side English error messages (returned in JSON {error: ...})
-// to user-facing Russian text.
+// to user-facing localized text.
 function pinErrorRu(msg) {
   const m = (msg || '').toLowerCase();
-  if (m.includes('wrong old pin')) return 'Неверный старый PIN';
-  if (m.includes('wrong pin')) return 'Неверный PIN';
-  if (m.includes('pin must be')) return 'PIN должен содержать минимум 4 цифры';
-  if (m.includes('pin not set')) return 'PIN не задан';
-  return msg || 'Не удалось выполнить операцию';
+  if (m.includes('wrong old pin')) return t('pin.err_wrong_old');
+  if (m.includes('wrong pin')) return t('pin.err_wrong');
+  if (m.includes('pin must be')) return t('pin.err_too_short');
+  if (m.includes('pin not set')) return t('pin.err_not_set');
+  return msg || t('pin.err_generic');
 }
 
 function renderPinBlock() {
   const hasPin = state.user && state.user.has_pin;
   const deleteOpen = !!state.pinDeleteOpen;
-  const oldPin = h('input', { type: 'password', inputmode: 'numeric', placeholder: 'Старый PIN', autocomplete: 'off' });
-  const newPin = h('input', { type: 'password', inputmode: 'numeric', placeholder: hasPin ? 'Новый PIN' : 'PIN (минимум 4 цифры)', autocomplete: 'off' });
-  const deletePin = h('input', { type: 'password', inputmode: 'numeric', placeholder: 'Текущий PIN', autocomplete: 'off' });
+  const oldPin = h('input', { type: 'password', inputmode: 'numeric', placeholder: t('pin.old_placeholder'), autocomplete: 'off' });
+  const newPin = h('input', { type: 'password', inputmode: 'numeric', placeholder: hasPin ? t('pin.new_placeholder') : t('pin.create_placeholder'), autocomplete: 'off' });
+  const deletePin = h('input', { type: 'password', inputmode: 'numeric', placeholder: t('pin.current_placeholder'), autocomplete: 'off' });
 
   // While the delete form is open, hide the add/change form to keep focus
   // and intent unambiguous.
   return h('div', { class: 'card' },
-    h('div', { class: 'section-title' }, 'PIN родителя'),
+    h('div', { class: 'section-title' }, t('pin.title')),
     h('p', { class: 'muted', style: 'margin-bottom: 10px' },
-      hasPin
-        ? 'PIN защищает переход в режим редактирования и открытие награды.'
-        : 'PIN не задан. Сейчас переход в режим редактирования происходит в один клик. Задайте PIN, чтобы защитить эти действия.'),
+      hasPin ? t('pin.hint_set') : t('pin.hint_unset')),
     !deleteOpen && hasPin && h('div', { style: 'margin-bottom: 8px' }, oldPin),
     !deleteOpen && h('div', { style: 'margin-bottom: 8px' }, newPin),
     state.pinError && h('div', { class: 'error' }, state.pinError),
@@ -1569,14 +1605,14 @@ function renderPinBlock() {
             await api('/api/admin-pin', { method: 'POST', body });
             oldPin.value = ''; newPin.value = '';
             await refreshUser();
-            flashPinSuccess(hasPin ? 'PIN изменён' : 'PIN установлен');
+            flashPinSuccess(hasPin ? t('pin.changed') : t('pin.set_success'));
             render();
           } catch (e) {
             state.pinError = pinErrorRu(e.message);
             render();
           }
         }
-      }, hasPin ? 'Изменить PIN' : 'Установить PIN'),
+      }, hasPin ? t('pin.change') : t('pin.set')),
       hasPin && h('button', {
         class: 'secondary',
         onclick: () => {
@@ -1584,31 +1620,31 @@ function renderPinBlock() {
           state.pinError = '';
           render();
         }
-      }, 'Удалить PIN')
+      }, t('pin.delete'))
     ),
     // Inline confirmation for delete — appears only when "Удалить PIN" was
     // clicked. Avoids native prompt() (broken focus inside Telegram WebApp).
     hasPin && deleteOpen && h('div', {},
-      h('div', { class: 'muted', style: 'margin-bottom: 8px' }, 'Введите текущий PIN, чтобы подтвердить удаление:'),
+      h('div', { class: 'muted', style: 'margin-bottom: 8px' }, t('pin.delete_confirm')),
       h('div', { style: 'margin-bottom: 8px' }, deletePin),
       h('div', { class: 'row' },
         h('button', { class: 'secondary', onclick: () => {
           state.pinDeleteOpen = false;
           state.pinError = '';
           render();
-        } }, 'Отмена'),
+        } }, t('pin.cancel')),
         h('button', { class: 'danger', onclick: async () => {
           try {
             await api('/api/admin-pin', { method: 'DELETE', body: { pin: deletePin.value } });
             state.pinDeleteOpen = false;
             await refreshUser();
-            flashPinSuccess('PIN удалён');
+            flashPinSuccess(t('pin.deleted'));
             render();
           } catch (e) {
             state.pinError = pinErrorRu(e.message);
             render();
           }
-        } }, 'Удалить')
+        } }, t('pin.delete_btn'))
       )
     )
   );
@@ -1616,18 +1652,18 @@ function renderPinBlock() {
 
 function renderGeneralBlock() {
   const currentName = (state.user && state.user.family_name) || '';
-  const input = h('input', { placeholder: 'Введите имя семьи', value: currentName });
+  const input = h('input', { placeholder: t('general.family_name_placeholder'), value: currentName });
   const submit = async () => {
     if (!input.value.trim()) return;
     try {
       await api('/api/family-name', { method: 'POST', body: { name: input.value.trim() } });
       state.generalError = null;
-      state.generalSuccess = 'Сохранено';
+      state.generalSuccess = t('general.saved');
       await refreshUser();
       render();
       setTimeout(() => { state.generalSuccess = null; render(); }, 2000);
     } catch (e) {
-      state.generalError = e.message || 'Не удалось сохранить';
+      state.generalError = e.message || t('general.save_error');
       state.generalSuccess = null;
       render();
     }
@@ -1640,50 +1676,46 @@ function renderGeneralBlock() {
 
   const dangerContent = confirming
     ? h('div', {},
-        h('p', { style: 'color:#e53935;font-weight:600;margin-bottom:8px' },
-          'Вы уверены? Это необратимо.'),
-        h('p', { class: 'muted', style: 'margin-bottom:12px;font-size:13px' },
-          'Будут удалены все дети, задания, награды, шаблоны, валидаторы и приглашения.'),
+        h('p', { style: 'color:#e53935;font-weight:600;margin-bottom:8px' }, t('general.confirm_title')),
+        h('p', { class: 'muted', style: 'margin-bottom:12px;font-size:13px' }, t('general.confirm_desc')),
         state.generalError && h('div', { class: 'error', style: 'margin-bottom:8px' }, state.generalError),
         h('div', { style: 'display:flex;gap:8px' },
           h('button', { class: 'danger', style: 'flex:1', onclick: async () => {
             try {
               await api('/api/clear-database', { method: 'POST' });
             } catch (e) {
-              state.generalError = e.message || 'Не удалось очистить базу данных';
+              state.generalError = e.message || t('general.save_error');
               state.clearDbConfirm = false;
               render();
               return;
             }
             window.location.reload();
-          } }, 'Да, удалить всё'),
+          } }, t('general.confirm_yes')),
           h('button', { class: 'secondary', style: 'flex:1', onclick: () => {
             state.clearDbConfirm = false;
             render();
-          } }, 'Отмена')
+          } }, t('general.confirm_no'))
         )
       )
     : h('div', {},
-        h('p', { class: 'muted', style: 'margin-bottom:10px' },
-          'Удаляет все данные семьи: детей, задания, награды, шаблоны, валидаторов и приглашения. Действие необратимо.'),
+        h('p', { class: 'muted', style: 'margin-bottom:10px' }, t('general.clear_db_hint')),
         h('button', { class: 'danger', onclick: () => {
           state.clearDbConfirm = true;
           render();
-        } }, 'Почистить базу данных')
+        } }, t('general.clear_db'))
       );
 
   return h('div', {},
     h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, 'Название семьи'),
-      h('p', { class: 'muted', style: 'margin-bottom: 10px' },
-        'Это имя увидят приглашённые валидаторы вместо вашего ID.'),
+      h('div', { class: 'section-title' }, t('general.family_name_title')),
+      h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t('general.family_name_hint')),
       h('div', { class: 'tg-field', style: 'margin-bottom: 8px' }, input),
       !confirming && state.generalError && h('div', { class: 'error', style: 'margin-bottom: 8px' }, state.generalError),
       state.generalSuccess && h('div', { style: 'color: #34c759; margin-bottom: 8px; font-size: 13px' }, state.generalSuccess),
-      h('button', { onclick: submit }, 'Сохранить')
+      h('button', { onclick: submit }, t('general.save'))
     ),
     h('div', { class: 'card', style: 'margin-top: 12px' },
-      h('div', { class: 'section-title' }, 'Опасная зона'),
+      h('div', { class: 'section-title' }, t('general.danger_title')),
       dangerContent
     )
   );
@@ -1691,22 +1723,22 @@ function renderGeneralBlock() {
 
 function renderSettings() {
   const tabs = [
-    { id: 'general',    label: 'Общее' },
-    { id: 'pin',        label: 'PIN' },
-    { id: 'invites',    label: 'Приглашения' },
-    { id: 'validators', label: 'Валидаторы' },
+    { id: 'general',    label: t('settings.tab_general') },
+    { id: 'pin',        label: t('settings.tab_pin') },
+    { id: 'invites',    label: t('settings.tab_invites') },
+    { id: 'validators', label: t('settings.tab_validators') },
   ];
   const tab = state.settingsTab || 'general';
 
   const tabBar = h('div', { class: 'settings-tabs' },
-    ...tabs.map(t => h('button', {
-      class: 'settings-tab' + (tab === t.id ? ' active' : ''),
+    ...tabs.map(tb => h('button', {
+      class: 'settings-tab' + (tab === tb.id ? ' active' : ''),
       onclick: async () => {
-        state.settingsTab = t.id;
-        if (t.id === 'validators') try { await loadValidators(); } catch (_) {}
+        state.settingsTab = tb.id;
+        if (tb.id === 'validators') try { await loadValidators(); } catch (_) {}
         render();
       }
-    }, t.label))
+    }, tb.label))
   );
 
   let content;
@@ -1722,8 +1754,8 @@ function renderSettings() {
 
   return h('div', {},
     h('div', { class: 'header' },
-      h('button', { class: 'ghost', onclick: () => go('kids') }, '‹ Назад'),
-      h('h1', {}, 'Настройки')
+      h('button', { class: 'ghost', onclick: () => go('kids') }, t('settings.back')),
+      h('h1', {}, t('settings.title'))
     ),
     tabBar,
     content
@@ -1733,25 +1765,25 @@ function renderSettings() {
 function renderPending() {
   const items = state.pendingTasks || [];
   const grouped = new Map();
-  for (const t of items) {
-    if (!grouped.has(t.kid_id)) grouped.set(t.kid_id, []);
-    grouped.get(t.kid_id).push(t);
+  for (const task of items) {
+    if (!grouped.has(task.kid_id)) grouped.set(task.kid_id, []);
+    grouped.get(task.kid_id).push(task);
   }
 
   return h('div', {},
     h('div', { class: 'header' },
       h('div', { style: 'flex: 1; min-width: 0' },
-        h('h1', { style: 'margin: 0' }, 'На проверке'),
+        h('h1', { style: 'margin: 0' }, t('pending.title')),
         renderFamilySwitcher()
       ),
       h('div', {},
         renderModeToggle(),
-        h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); suppressTgAutoLogin(); state.user = null; setMode('view'); await bootToLogin(); } }, 'Выйти')
+        h('button', { class: 'ghost', onclick: async () => { await api('/api/logout', { method: 'POST' }); suppressTgAutoLogin(); state.user = null; setMode('view'); await bootToLogin(); } }, t('pending.logout'))
       )
     ),
     items.length === 0
       ? h('div', { class: 'card' },
-          h('div', { class: 'empty' }, 'Нет заданий, ждущих подтверждения. Можно отдохнуть! ✨')
+          h('div', { class: 'empty' }, t('pending.empty'))
         )
       : Array.from(grouped.values()).map(tasks => {
           const t0 = tasks[0];
@@ -1761,25 +1793,25 @@ function renderPending() {
               renderAvatar(kidStub, 40),
               h('div', {},
                 h('div', { style: 'font-weight:600' }, t0.kid_name),
-                h('div', { class: 'muted', style: 'font-size:13px' }, `${t0.kid_age} лет, ${t0.kid_gender}`)
+                h('div', { class: 'muted', style: 'font-size:13px' }, t('kid.age_gender').replace('{age}', t0.kid_age).replace('{gender}', tGender(t0.kid_gender)))
               )
             ),
-            ...tasks.map(t => h('div', { class: 'task pending' },
+            ...tasks.map(task => h('div', { class: 'task pending' },
               h('div', { class: 'task-marker pending-mark' }, '⏳'),
               h('div', { class: 'title' },
-                h('div', {}, t.title),
-                h('div', { class: 'muted', style: 'font-size:12px' }, t.date)
+                h('div', {}, task.title),
+                h('div', { class: 'muted', style: 'font-size:12px' }, task.date)
               ),
               h('button', { onclick: async () => {
-                await api(`/api/tasks/${t.id}/approve`, { method: 'POST' });
+                await api(`/api/tasks/${task.id}/approve`, { method: 'POST' });
                 await loadPendingTasks();
                 render();
-              } }, 'Подтвердить'),
+              } }, t('pending.approve')),
               h('button', { class: 'secondary', onclick: async () => {
-                await api(`/api/tasks/${t.id}/reject`, { method: 'POST' });
+                await api(`/api/tasks/${task.id}/reject`, { method: 'POST' });
                 await loadPendingTasks();
                 render();
-              } }, 'Отклонить')
+              } }, t('pending.reject'))
             ))
           );
         })
@@ -1807,7 +1839,7 @@ function render() {
 
 // ---- Setup family (mandatory on first login) ----
 function renderSetupFamily() {
-  const input = h('input', { placeholder: 'Введите имя семьи', style: 'width: 100%; box-sizing: border-box' });
+  const input = h('input', { placeholder: t('setup.placeholder'), style: 'width: 100%; box-sizing: border-box' });
   const submit = async () => {
     if (!input.value.trim()) return;
     try {
@@ -1816,7 +1848,7 @@ function renderSetupFamily() {
       await refreshUser();
       await routeForCurrentContext();
     } catch (e) {
-      state.setupFamilyError = e.message || 'Не удалось сохранить';
+      state.setupFamilyError = e.message || t('setup.error');
       render();
     }
   };
@@ -1824,12 +1856,11 @@ function renderSetupFamily() {
   return h('div', { class: 'page' },
     h('div', { class: 'card', style: 'text-align: center; padding: 32px 24px' },
       h('div', { style: 'font-size: 40px; margin-bottom: 12px' }, '👨‍👩‍👧'),
-      h('h2', { style: 'margin-bottom: 8px' }, 'Как называется ваша семья?'),
-      h('p', { class: 'muted', style: 'margin-bottom: 20px' },
-        'Это имя увидят приглашённые валидаторы. Его можно изменить позже в Настройках.'),
+      h('h2', { style: 'margin-bottom: 8px' }, t('setup.title')),
+      h('p', { class: 'muted', style: 'margin-bottom: 20px' }, t('setup.hint')),
       h('div', { class: 'tg-field', style: 'margin-bottom: 12px' }, input),
       state.setupFamilyError && h('div', { class: 'error', style: 'margin-bottom: 8px' }, state.setupFamilyError),
-      h('button', { style: 'width: 100%', onclick: submit }, 'Продолжить')
+      h('button', { style: 'width: 100%', onclick: submit }, t('setup.submit'))
     )
   );
 }
@@ -1894,7 +1925,7 @@ async function enterAfterLogin() {
       await refreshUser();
     } catch (e) {
       // Show the error but continue routing so the user isn't stuck.
-      state.error = 'Не удалось принять приглашение: ' + (e.message || '');
+      state.error = t('invite.redeem_error') + (e.message || '');
     } finally {
       // Strip ?invite=... from the URL so a refresh doesn't re-trigger.
       try {
