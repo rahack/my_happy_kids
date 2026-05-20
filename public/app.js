@@ -413,18 +413,6 @@ function renderModeToggle() {
   return h('span', {}, ...buttons);
 }
 
-// Small button that toggles between Russian and English.
-// Placed in the kids-list header right after the mode toggle icons.
-function renderLangToggle() {
-  return h('button', {
-    class: 'ghost lang-toggle',
-    onclick: () => {
-      setLang(getLang() === 'ru' ? 'en' : 'ru');
-      render();
-    }
-  }, t('lang.toggle'));
-}
-
 // Modal overlay asking for admin OR validator credentials, depending on
 // state.modeAuthTarget. After successful verification we switch UI mode.
 function renderModeAuthModal() {
@@ -627,7 +615,6 @@ function renderKidsList() {
       ),
       h('div', {},
         renderModeToggle(),
-        renderLangToggle(),
         isAdmin() && h('button', { class: 'ghost', onclick: async () => {
           try { await loadValidators(); } catch (e) { /* ignore */ }
           try { await loadInvites(); } catch (e) { /* ignore */ }
@@ -1705,6 +1692,21 @@ function renderGeneralBlock() {
         } }, t('general.clear_db'))
       );
 
+  // Language selector: two buttons RU / EN, active one is highlighted.
+  const langCard = h('div', { class: 'card', style: 'margin-top: 12px' },
+    h('div', { class: 'section-title' }, t('lang.section_title')),
+    h('div', { class: 'settings-tabs', style: 'margin-bottom: 0' },
+      h('button', {
+        class: 'settings-tab' + (getLang() === 'ru' ? ' active' : ''),
+        onclick: () => { setLang('ru'); render(); }
+      }, t('lang.label_ru')),
+      h('button', {
+        class: 'settings-tab' + (getLang() === 'en' ? ' active' : ''),
+        onclick: () => { setLang('en'); render(); }
+      }, t('lang.label_en'))
+    )
+  );
+
   return h('div', {},
     h('div', { class: 'card' },
       h('div', { class: 'section-title' }, t('general.family_name_title')),
@@ -1714,6 +1716,7 @@ function renderGeneralBlock() {
       state.generalSuccess && h('div', { style: 'color: #34c759; margin-bottom: 8px; font-size: 13px' }, state.generalSuccess),
       h('button', { onclick: submit }, t('general.save'))
     ),
+    langCard,
     h('div', { class: 'card', style: 'margin-top: 12px' },
       h('div', { class: 'section-title' }, t('general.danger_title')),
       dangerContent

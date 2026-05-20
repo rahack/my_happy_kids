@@ -261,6 +261,11 @@ const TRANSLATIONS = {
     'photo.read_error': 'Не удалось прочитать файл',
     'photo.load_error': 'Не удалось загрузить изображение',
 
+    // Language setting (in General settings)
+    'lang.section_title': 'Язык',
+    'lang.label_ru': 'Русский',
+    'lang.label_en': 'English',
+
     // Language toggle (shows the language you will SWITCH TO)
     'lang.toggle': 'EN',
   },
@@ -522,6 +527,11 @@ const TRANSLATIONS = {
     'invite.redeem_error': 'Failed to accept invite: ',
     'photo.read_error': 'Failed to read the file',
     'photo.load_error': 'Failed to load the image',
+
+    // Language setting (in General settings)
+    'lang.section_title': 'Language',
+    'lang.label_ru': 'Русский',
+    'lang.label_en': 'English',
 
     // Language toggle (shows the language you will SWITCH TO)
     'lang.toggle': 'RU',
