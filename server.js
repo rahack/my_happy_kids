@@ -824,7 +824,19 @@ app.post('/api/clear-database', requireAdmin, (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
-// ---- Static ----
+// ---- Landing: dynamic config ----
+app.get('/landing/config.js', (req, res) => {
+  const botUsername = getBotUsername();
+  const botUrl = botUsername ? `https://t.me/${botUsername}` : null;
+  res.set('Content-Type', 'application/javascript; charset=utf-8');
+  res.set('Cache-Control', 'no-store');
+  res.send(`window.BOT_URL = ${JSON.stringify(botUrl)};`);
+});
+
+// ---- Landing static files ----
+app.use('/landing', express.static(path.join(__dirname, 'landing')));
+
+// ---- App static ----
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.listen(PORT, async () => {

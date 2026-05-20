@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Happy Kids — Daily Motivation for Children</title>
+  <meta name="description" content="A Telegram Mini App that motivates children with daily tasks, validation, and surprise rewards.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===== HEADER ===== -->
+  <header class="header" id="header">
+    <div class="nav-inner">
+      <a class="logo" href="#home" data-page="home">
+        <span class="logo-icon">🌟</span>
+        <span class="logo-text">My Happy Kids</span>
+      </a>
+      <nav class="nav-links" id="navLinks">
+        <a class="nav-link" href="#home"    data-page="home"    data-i18n="nav.home"></a>
+        <a class="nav-link" href="#pricing" data-page="pricing" data-i18n="nav.pricing"></a>
+        <a class="nav-link" href="#docs"    data-page="docs"    data-i18n="nav.docs"></a>
+      </nav>
+      <div class="header-actions">
+        <div class="lang-switch">
+          <button class="lang-btn" id="langEn" onclick="setLang('en')">EN</button>
+          <button class="lang-btn" id="langRu" onclick="setLang('ru')">RU</button>
+        </div>
+        <button class="burger" id="burgerBtn" aria-label="Menu" onclick="toggleMobileMenu()">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+    <div class="mobile-menu" id="mobileMenu">
+      <a class="mobile-link" href="#home"    data-page="home"    data-i18n="nav.home"    onclick="toggleMobileMenu(false)"></a>
+      <a class="mobile-link" href="#pricing" data-page="pricing" data-i18n="nav.pricing" onclick="toggleMobileMenu(false)"></a>
+      <a class="mobile-link" href="#docs"    data-page="docs"    data-i18n="nav.docs"    onclick="toggleMobileMenu(false)"></a>
+    </div>
+  </header>
+
+  <!-- ===== MAIN ===== -->
+  <main id="main">
+
+    <!-- ===== HOME ===== -->
+    <div id="page-home" class="page active">
+
+      <!-- Hero -->
+      <section class="hero">
+        <div class="hero-text">
+          <span class="hero-badge" data-i18n="hero.badge"></span>
+          <h1 class="hero-title" data-i18n-html="hero.title"></h1>
+          <p class="hero-subtitle" data-i18n="hero.subtitle"></p>
+          <div class="hero-ctas">
+            <a class="btn btn-primary" id="ctaBtn" href="#" data-i18n="hero.cta"></a>
+            <a class="btn btn-outline" href="#docs" data-page="docs" data-i18n="hero.ctaSecondary"></a>
+          </div>
+        </div>
+        <div class="hero-visual">
+          <div class="phone-wrap">
+            <div class="phone-glow"></div>
+            <div class="phone">
+              <div class="phone-inner">
+                <div class="app-screen">
+                  <div class="app-topbar">
+                    <span class="app-avatar">🐶</span>
+                    <div class="app-name-wrap">
+                      <span class="app-kidname" data-i18n="mockup.kidName"></span>
+                      <span class="app-date" data-i18n="mockup.today"></span>
+                    </div>
+                    <span class="app-count">3 / 4</span>
+                  </div>
+                  <div class="app-progress-wrap">
+                    <div class="app-progress-bar">
+                      <div class="app-progress-fill" id="mockProgress"></div>
+                    </div>
+                    <span class="app-progress-pct">75%</span>
+                  </div>
+                  <div class="app-tasks">
+                    <div class="app-task done" style="animation-delay:.10s">
+                      <span class="app-task-check done-check">✓</span>
+                      <span data-i18n="mockup.task1"></span>
+                    </div>
+                    <div class="app-task done" style="animation-delay:.22s">
+                      <span class="app-task-check done-check">✓</span>
+                      <span data-i18n="mockup.task2"></span>
+                    </div>
+                    <div class="app-task done" style="animation-delay:.34s">
+                      <span class="app-task-check done-check">✓</span>
+                      <span data-i18n="mockup.task3"></span>
+                    </div>
+                    <div class="app-task pending" style="animation-delay:.46s">
+                      <span class="app-task-check pend-check">⏳</span>
+                      <span data-i18n="mockup.task4"></span>
+                      <span class="app-task-badge" data-i18n="mockup.pending"></span>
+                    </div>
+                  </div>
+                  <div class="app-reward">
+                    <span class="app-reward-icon">🎁</span>
+                    <span data-i18n="mockup.reward"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section class="how-section fade-in-section">
+        <div class="container">
+          <h2 class="section-title" data-i18n="howItWorks.title"></h2>
+          <div class="steps-grid" id="stepsGrid"></div>
+        </div>
+      </section>
+
+      <!-- Features -->
+      <section class="features-section fade-in-section">
+        <div class="container">
+          <h2 class="section-title" data-i18n="features.title"></h2>
+          <div class="features-grid" id="featuresGrid"></div>
+        </div>
+      </section>
+
+      <!-- Roles -->
+      <section class="roles-section fade-in-section">
+        <div class="container">
+          <h2 class="section-title" data-i18n="roles.title"></h2>
+          <div class="roles-grid" id="rolesGrid"></div>
+        </div>
+      </section>
+
+    </div><!-- #page-home -->
+
+    <!-- ===== PRICING ===== -->
+    <div id="page-pricing" class="page">
+      <section class="pricing-section fade-in-section">
+        <div class="container centered-content">
+          <h1 class="section-title" data-i18n="pricing.title"></h1>
+          <div class="coming-card">
+            <div class="coming-icon">🚀</div>
+            <h2 data-i18n="pricing.coming"></h2>
+            <p data-i18n="pricing.comingDesc"></p>
+          </div>
+        </div>
+      </section>
+    </div><!-- #page-pricing -->
+
+    <!-- ===== DOCS ===== -->
+    <div id="page-docs" class="page">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docsSidebar"></aside>
+        <article class="docs-content" id="docsContent"></article>
+      </div>
+    </div><!-- #page-docs -->
+
+  </main>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="footer" id="siteFooter">
+    <div class="container">
+      <div class="footer-inner">
+        <a class="logo footer-logo" href="#home" data-page="home">
+          <span class="logo-icon">🌟</span>
+          <span class="logo-text">My Happy Kids</span>
+        </a>
+        <p class="footer-copy" data-i18n="footer.copy"></p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="config.js" onerror="window.BOT_URL=null"></script>
+  <script src="app.js"></script>
+</body>
+</html>
