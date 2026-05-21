@@ -1378,15 +1378,13 @@ function renderValidatorAddBlock() {
 
   const setRole = (r) => { renderValidatorAddBlock._role = r; render(); };
 
-  const roleToggle = h('div', { style: 'display: flex; gap: 6px; margin-bottom: 8px' },
+  const roleToggle = h('div', { class: 'role-switcher' },
     h('button', {
-      class: currentRole === 'validator' ? 'secondary active' : 'secondary',
-      style: currentRole === 'validator' ? 'font-weight: 600' : '',
+      class: currentRole === 'validator' ? 'role-option active' : 'role-option',
       onclick: () => setRole('validator')
     }, t('validators.role_validator')),
     h('button', {
-      class: currentRole === 'admin' ? 'secondary active' : 'secondary',
-      style: currentRole === 'admin' ? 'font-weight: 600' : '',
+      class: currentRole === 'admin' ? 'role-option active' : 'role-option',
       onclick: () => setRole('admin')
     }, t('validators.role_admin'))
   );
@@ -1505,8 +1503,8 @@ function renderInvitesBlock() {
     }
   };
 
-  const renderInviteSection = (role, titleKey, hintKey, shareMsgKey) => {
-    const filtered = list.filter(inv => (inv.role || 'validator') === role);
+  const renderInviteSection = (sectionRole, titleKey, hintKey, shareMsgKey, createBtnKey) => {
+    const filtered = list.filter(inv => (inv.role || 'validator') === sectionRole);
     return h('div', { class: 'card' },
       h('div', { class: 'section-title' }, t(titleKey)),
       h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t(hintKey)),
@@ -1536,22 +1534,23 @@ function renderInvitesBlock() {
           ))),
       state.inviteCopiedAt && h('div', { class: 'flash-success' }, t('invites.copied')),
       h('button', {
-        style: 'margin-top: 10px',
+        style: 'margin-top: 10px; width: 100%',
         onclick: async () => {
+          const invRole = sectionRole; // explicit capture to avoid confusion
           try {
-            await api('/api/invites', { method: 'POST', body: { role } });
+            await api('/api/invites', { method: 'POST', body: { role: invRole } });
             await loadInvites();
             render();
           } catch (e) { showError(e); }
         }
-      }, t('invites.create'))
+      }, t(createBtnKey))
     );
   };
 
   return h('div', {},
-    renderInviteSection('validator', 'invites.validator_title', 'invites.validator_hint', 'invites.share_msg'),
+    renderInviteSection('validator', 'invites.validator_title', 'invites.validator_hint', 'invites.share_msg', 'invites.create_validator'),
     h('div', { style: 'height: 12px' }),
-    renderInviteSection('admin', 'invites.admin_title', 'invites.admin_hint', 'invites.admin_share_msg')
+    renderInviteSection('admin', 'invites.admin_title', 'invites.admin_hint', 'invites.admin_share_msg', 'invites.create_admin')
   );
 }
 

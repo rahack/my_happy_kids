@@ -329,6 +329,35 @@ input::placeholder { color: #999; }
   color: var(--tg-theme-button-text-color, #fff);
 }
 
+/* Role segmented control (Telegram-style pill switcher) */
+.role-switcher {
+  display: flex;
+  background: rgba(120, 120, 128, 0.12);
+  border-radius: 9px;
+  padding: 2px;
+  margin-bottom: 10px;
+  gap: 0;
+}
+.role-option {
+  flex: 1;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--tg-theme-text-color, #1c1c1e);
+  cursor: pointer;
+  transition: background 0.15s, box-shadow 0.15s, color 0.15s;
+  text-align: center;
+}
+.role-option.active {
+  background: var(--tg-theme-secondary-bg-color, #fff);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.14), 0 0 0 0.5px rgba(0,0,0,0.06);
+  font-weight: 500;
+  color: var(--tg-theme-text-color, #1c1c1e);
+}
+
 /* Custom combo-box (input + dropdown suggestions) */
 .combo-wrapper { position: relative; flex: 1; min-width: 0; }
 .combo-wrapper input { width: 100%; }

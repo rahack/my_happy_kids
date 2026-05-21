@@ -214,6 +214,8 @@ const TRANSLATIONS = {
     'invites.admin_title': 'Пригласить администратора',
     'invites.admin_hint': 'Открыв ссылку, пользователь Telegram получит права администратора — сможет полностью управлять детьми, заданиями и наградами. Ссылка постоянная и многоразовая.',
     'invites.admin_share_msg': 'Приглашение в Happy Kids: управляйте заданиями и наградами нашего ребёнка',
+    'invites.create_validator': 'Создать ссылку для валидатора',
+    'invites.create_admin': 'Создать ссылку для администратора',
 
     // Validators / Users
     'validators.add_title': 'Добавить пользователя по логину и паролю',
@@ -492,6 +494,8 @@ const TRANSLATIONS = {
     'invites.admin_title': 'Invite an admin',
     'invites.admin_hint': 'By opening this link, the Telegram user gets admin rights — they can fully manage kids, tasks and rewards. The link is permanent and reusable.',
     'invites.admin_share_msg': 'Invitation to Happy Kids: manage our child\'s tasks and rewards',
+    'invites.create_validator': 'Create validator invite link',
+    'invites.create_admin': 'Create admin invite link',
 
     // Validators / Users
     'validators.add_title': 'Add user by login and password',
