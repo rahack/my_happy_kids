@@ -352,10 +352,9 @@ input::placeholder { color: #999; }
   text-align: center;
 }
 .role-option.active {
-  background: var(--tg-theme-secondary-bg-color, #fff);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.14), 0 0 0 0.5px rgba(0,0,0,0.06);
-  font-weight: 500;
-  color: var(--tg-theme-text-color, #1c1c1e);
+  background: var(--tg-theme-button-color, #007aff);
+  color: var(--tg-theme-button-text-color, #fff);
+  font-weight: 600;
 }
 
 /* Custom combo-box (input + dropdown suggestions) */

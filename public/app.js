@@ -138,7 +138,7 @@ function startFamilyNamePolling() {
     try {
       const families = await api('/api/my-families');
       const changed = families.some(f => {
-        const old = (state.families || []).find(x => x.parent_id === f.parent_id);
+        const old = (state.families || []).find(x => x.parent_id === f.parent_id && x.role === f.role);
         return old && old.family_name !== f.family_name;
       });
       if (!changed) return;
@@ -147,7 +147,8 @@ function startFamilyNamePolling() {
       const sel = document.querySelector('.family-select');
       if (!sel) return;
       families.forEach(f => {
-        const opt = [...sel.options].find(o => parseInt(o.value, 10) === f.parent_id);
+        const key = `${f.parent_id}:${f.role}`;
+        const opt = [...sel.options].find(o => o.value === key);
         if (opt) {
           const name = f.family_name || f.parent_username;
           const suffix = f.role === 'admin' ? t('family.admin_suffix') : t('family.validator_suffix');
@@ -171,6 +172,7 @@ function renderFamilySwitcher() {
   const families = state.families || [];
   if (families.length < 2) return null;
   const currentParentId = state.user.context && state.user.context.parent_id;
+  const currentRole = state.user.context && state.user.context.role;
   const familyLabel = (f) => {
     if (f.is_self) return t('family.my');
     const name = f.family_name || f.parent_username;
@@ -179,14 +181,17 @@ function renderFamilySwitcher() {
   };
   const sel = h('select', { class: 'family-select' },
     ...families.map(f => h('option', {
-      value: String(f.parent_id),
-      selected: f.parent_id === currentParentId
+      value: `${f.parent_id}:${f.role}`,
     }, familyLabel(f)))
   );
+  // Set the selected option via .value (DOM property) — more reliable than
+  // the 'selected' HTML attribute for programmatically created elements.
+  sel.value = `${currentParentId}:${currentRole}`;
   sel.onchange = async () => {
-    const pid = parseInt(sel.value, 10);
-    if (pid === currentParentId) return;
-    try { await switchFamilyContext(pid); }
+    const [pidStr, role] = sel.value.split(':');
+    const pid = parseInt(pidStr, 10);
+    if (pid === currentParentId && role === currentRole) return;
+    try { await switchFamilyContext(pid, role); }
     catch (e) { showError(e); }
   };
   return sel;
@@ -625,7 +630,7 @@ function renderKidsList() {
       ),
       h('div', {},
         renderModeToggle(),
-        isAdmin() && h('button', { class: 'ghost', onclick: async () => {
+        isAdmin() && state.user.context && state.user.context.is_self && h('button', { class: 'ghost', onclick: async () => {
           try { await loadValidators(); } catch (e) { /* ignore */ }
           try { await loadInvites(); } catch (e) { /* ignore */ }
           state.inviteCopiedAt = null;
@@ -1483,6 +1488,9 @@ async function loadInvites() {
 
 function renderInvitesBlock() {
   const list = state.invites || [];
+  if (!state.inviteTab) state.inviteTab = 'validator';
+  const tab = state.inviteTab;
+
   // Share helpers — copy to clipboard, or open Telegram share picker.
   const shareViaTelegram = (url, msgKey) => {
     const msg = encodeURIComponent(t(msgKey || 'invites.share_msg'));
@@ -1503,54 +1511,53 @@ function renderInvitesBlock() {
     }
   };
 
-  const renderInviteSection = (sectionRole, titleKey, hintKey, shareMsgKey, createBtnKey) => {
-    const filtered = list.filter(inv => (inv.role || 'validator') === sectionRole);
-    return h('div', { class: 'card' },
-      h('div', { class: 'section-title' }, t(titleKey)),
-      h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t(hintKey)),
-      filtered.length === 0
-        ? h('div', { class: 'empty' }, t('invites.empty'))
-        : h('div', {}, ...filtered.map(inv => h('div', { class: 'kid-row', style: 'flex-direction: column; gap: 6px; align-items: stretch' },
-            h('div', {},
-              h('div', { style: 'font-family: monospace; font-size: 12px; word-break: break-all' }, inv.url || t('invites.no_url')),
-              h('div', { class: 'kid-meta' }, t('invites.created_at').replace('{date}', inv.created_at || ''))
-            ),
-            h('div', { style: 'display: flex; gap: 6px; align-items: center' },
-              inv.url && h('button', { class: 'secondary', onclick: () => copyToClipboard(inv.url) }, t('invites.copy')),
-              inv.url && h('button', { class: 'secondary', onclick: () => shareViaTelegram(inv.url, shareMsgKey) }, t('invites.share')),
-              h('button', {
-                class: 'icon-btn danger',
-                title: t('invites.revoke_title'),
-                onclick: async () => {
-                  if (!confirm(t('invites.revoke_confirm'))) return;
-                  try {
-                    await api(`/api/invites/${inv.id}`, { method: 'DELETE' });
-                    await loadInvites();
-                    render();
-                  } catch (e) { showError(e); }
-                }
-              }, '🗑')
-            )
-          ))),
-      state.inviteCopiedAt && h('div', { class: 'flash-success' }, t('invites.copied')),
-      h('button', {
-        style: 'margin-top: 10px; width: 100%',
-        onclick: async () => {
-          const invRole = sectionRole; // explicit capture to avoid confusion
-          try {
-            await api('/api/invites', { method: 'POST', body: { role: invRole } });
-            await loadInvites();
-            render();
-          } catch (e) { showError(e); }
-        }
-      }, t(createBtnKey))
-    );
-  };
+  const filtered = list.filter(inv => (inv.role || 'validator') === tab);
+  const shareMsgKey = tab === 'admin' ? 'invites.admin_share_msg' : 'invites.share_msg';
+  const hintKey = tab === 'admin' ? 'invites.admin_hint' : 'invites.validator_hint';
+  const createBtnKey = tab === 'admin' ? 'invites.create_admin' : 'invites.create_validator';
 
-  return h('div', {},
-    renderInviteSection('validator', 'invites.validator_title', 'invites.validator_hint', 'invites.share_msg', 'invites.create_validator'),
-    h('div', { style: 'height: 12px' }),
-    renderInviteSection('admin', 'invites.admin_title', 'invites.admin_hint', 'invites.admin_share_msg', 'invites.create_admin')
+  return h('div', { class: 'card' },
+    h('div', { class: 'role-switcher' },
+      h('button', { class: tab === 'validator' ? 'role-option active' : 'role-option', onclick: () => { state.inviteTab = 'validator'; render(); } }, t('invites.validator_title')),
+      h('button', { class: tab === 'admin' ? 'role-option active' : 'role-option', onclick: () => { state.inviteTab = 'admin'; render(); } }, t('invites.admin_title'))
+    ),
+    h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t(hintKey)),
+    filtered.length === 0
+      ? h('div', { class: 'empty' }, t('invites.empty'))
+      : h('div', {}, ...filtered.map(inv => h('div', { class: 'kid-row', style: 'flex-direction: column; gap: 6px; align-items: stretch' },
+          h('div', {},
+            h('div', { style: 'font-family: monospace; font-size: 12px; word-break: break-all' }, inv.url || t('invites.no_url')),
+            h('div', { class: 'kid-meta' }, t('invites.created_at').replace('{date}', inv.created_at || ''))
+          ),
+          h('div', { style: 'display: flex; gap: 6px; align-items: center' },
+            inv.url && h('button', { class: 'secondary', onclick: () => copyToClipboard(inv.url) }, t('invites.copy')),
+            inv.url && h('button', { class: 'secondary', onclick: () => shareViaTelegram(inv.url, shareMsgKey) }, t('invites.share')),
+            h('button', {
+              class: 'icon-btn danger',
+              title: t('invites.revoke_title'),
+              onclick: async () => {
+                if (!confirm(t('invites.revoke_confirm'))) return;
+                try {
+                  await api(`/api/invites/${inv.id}`, { method: 'DELETE' });
+                  await loadInvites();
+                  render();
+                } catch (e) { showError(e); }
+              }
+            }, '🗑')
+          )
+        ))),
+    state.inviteCopiedAt && h('div', { class: 'flash-success' }, t('invites.copied')),
+    h('button', {
+      style: 'margin-top: 10px; width: 100%',
+      onclick: async () => {
+        const currentTab = state.inviteTab;
+        try {
+          await api('/api/invites', { method: 'POST', body: { role: currentTab } });
+          await loadInvites();
+          render();
+        } catch (e) { showError(e); }
+      }
+    }, t(createBtnKey))
   );
 }
 
@@ -1967,11 +1974,15 @@ async function refreshUser() {
 async function routeForCurrentContext() {
   const ctx = state.user && state.user.context;
   if (ctx && ctx.role === 'validator') {
-    setMode('validator');
+    // Set mode silently (no render) — go('pending') will render the final page.
+    state.mode = 'validator';
+    localStorage.setItem('mode', 'validator');
     await loadPendingTasks();
     go('pending');
   } else {
-    setMode('view');
+    // Set mode silently (no render) — go('kids') will render the final page.
+    state.mode = 'view';
+    localStorage.setItem('mode', 'view');
     await loadKids();
     go('kids');
   }
@@ -1988,7 +1999,7 @@ async function enterAfterLogin() {
   if (inviteToken) {
     try {
       const r = await api('/api/invites/redeem', { method: 'POST', body: { token: inviteToken } });
-      await api('/api/switch-context', { method: 'POST', body: { parent_id: r.parent_id } });
+      await api('/api/switch-context', { method: 'POST', body: { parent_id: r.parent_id, role: r.role } });
       // Refresh user state so context info reflects the switch.
       await refreshUser();
     } catch (e) {
@@ -2006,8 +2017,10 @@ async function enterAfterLogin() {
   await routeForCurrentContext();
 }
 
-async function switchFamilyContext(parentId) {
-  await api('/api/switch-context', { method: 'POST', body: { parent_id: parentId } });
+async function switchFamilyContext(parentId, role) {
+  const body = { parent_id: parentId };
+  if (role) body.role = role;
+  await api('/api/switch-context', { method: 'POST', body });
   await refreshUser();
   await routeForCurrentContext();
 }

@@ -17,7 +17,7 @@ const TRANSLATIONS = {
     'login.tg_error': 'Не удалось войти через Telegram',
 
     // Kids list
-    'kids.title': 'Дети',
+    'kids.title': 'Доска',
     'kids.settings': 'Настройки',
     'kids.logout': 'Выйти',
     'kids.tab_kids': 'Дети',
@@ -297,7 +297,7 @@ const TRANSLATIONS = {
     'login.tg_error': 'Failed to sign in with Telegram',
 
     // Kids list
-    'kids.title': 'Kids',
+    'kids.title': 'Board',
     'kids.settings': 'Settings',
     'kids.logout': 'Log out',
     'kids.tab_kids': 'Kids',

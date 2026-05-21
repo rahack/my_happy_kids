@@ -146,6 +146,31 @@ ensureColumn('invites', 'role', "TEXT NOT NULL DEFAULT 'validator'");
   }
 }
 
+// Migrate memberships UNIQUE constraint to allow the same user to hold both
+// admin AND validator roles in the same family simultaneously.
+// UNIQUE(user_id, parent_id) → UNIQUE(user_id, parent_id, role)
+{
+  const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memberships'").get();
+  if (tbl && !tbl.sql.includes('parent_id, role')) {
+    db.exec(`
+      ALTER TABLE memberships RENAME TO memberships_old;
+      CREATE TABLE memberships (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        parent_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('admin','validator')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(user_id, parent_id, role)
+      );
+      CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
+      CREATE INDEX IF NOT EXISTS idx_memberships_parent ON memberships(parent_id);
+      INSERT INTO memberships (id, user_id, parent_id, role, created_at)
+        SELECT id, user_id, parent_id, role, created_at FROM memberships_old;
+      DROP TABLE memberships_old;
+    `);
+  }
+}
+
 // No default seed. Admin accounts are auto-created by /api/tg-auth on first
 // Telegram login (each TG user = own tenant). Validators are created inside
 // each admin's settings.

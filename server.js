@@ -4,6 +4,7 @@ const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 const db = require('./db');
 const { startBot, getBotUsername } = require('./bot');
 const { startTunnel } = require('./tunnel');
@@ -421,15 +422,13 @@ app.post('/api/invites/redeem', requireAuth, (req, res) => {
   if (inv.parent_id === req.session.userId) return res.status(400).json({ error: 'cannot redeem your own invite' });
   const u = db.prepare('SELECT role FROM users WHERE id = ?').get(req.session.userId);
   if (!u || u.role !== 'admin') return res.status(403).json({ error: 'only TG-registered users can join other families' });
-  // Insert membership (ignore if already exists).
+  // Insert membership for this role. INSERT OR IGNORE so redeeming the same
+  // invite twice is a no-op. Since UNIQUE is now (user_id, parent_id, role),
+  // a user can hold both admin AND validator memberships in the same family.
   const invRole = inv.role || 'validator';
-  try {
-    db.prepare('INSERT INTO memberships (user_id, parent_id, role) VALUES (?, ?, ?)').run(req.session.userId, inv.parent_id, invRole);
-  } catch (e) {
-    // UNIQUE violation = already member; treat as success.
-  }
+  db.prepare('INSERT OR IGNORE INTO memberships (user_id, parent_id, role) VALUES (?, ?, ?)').run(req.session.userId, inv.parent_id, invRole);
   const parent = db.prepare('SELECT username FROM users WHERE id = ?').get(inv.parent_id);
-  res.json({ ok: true, parent_id: inv.parent_id, parent_username: parent ? parent.username : null });
+  res.json({ ok: true, parent_id: inv.parent_id, role: invRole, parent_username: parent ? parent.username : null });
 });
 
 function buildInviteUrl(token) {
@@ -466,7 +465,7 @@ app.get('/api/my-families', requireAuth, (req, res) => {
 });
 
 app.post('/api/switch-context', requireAuth, (req, res) => {
-  const { parent_id } = req.body || {};
+  const { parent_id, role: requestedRole } = req.body || {};
   const pid = parseInt(parent_id, 10);
   if (!pid) return res.status(400).json({ error: 'parent_id required' });
   const me = db.prepare('SELECT id, role, parent_id FROM users WHERE id = ?').get(req.session.userId);
@@ -477,7 +476,10 @@ app.post('/api/switch-context', requireAuth, (req, res) => {
   if (me.role === 'admin' && pid === me.id) role = 'admin';
   else if (me.role === 'validator' && pid === me.parent_id) role = 'validator';
   else if (me.role === 'admin') {
-    const m = db.prepare('SELECT role FROM memberships WHERE user_id = ? AND parent_id = ?').get(me.id, pid);
+    // If caller specified a role, look for that exact membership; otherwise pick first.
+    const m = (requestedRole === 'admin' || requestedRole === 'validator')
+      ? db.prepare('SELECT role FROM memberships WHERE user_id = ? AND parent_id = ? AND role = ?').get(me.id, pid, requestedRole)
+      : db.prepare('SELECT role FROM memberships WHERE user_id = ? AND parent_id = ?').get(me.id, pid);
     if (m) role = m.role;
   }
   if (!role) return res.status(403).json({ error: 'no access to this family' });
@@ -860,7 +862,25 @@ app.get('/landing/config.js', (req, res) => {
 app.use('/landing', express.static(path.join(__dirname, 'landing')));
 
 // ---- App static ----
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve index.html dynamically so every server restart injects a fresh ?v=
+// cache-buster into <script> and <link> URLs, defeating Telegram's WebView
+// cache even when the resource paths haven't changed.
+const APP_VERSION = Date.now();
+app.get('/', (req, res) => {
+  let html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+  html = html.replace(/(src|href)="([^"]+\.(js|css))"/g, `$1="$2?v=${APP_VERSION}"`);
+  res.set('Cache-Control', 'no-store');
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+});
+// Disable caching for JS/CSS so Telegram's WebView picks up updates immediately.
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    if (/\.(js|css)$/.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    }
+  }
+}));
 
 app.listen(PORT, async () => {
   console.log(`[server] running at http://localhost:${PORT}`);
