@@ -388,17 +388,18 @@ app.post('/api/change-password', requireAuth, (req, res) => {
 
 // ---- Invites & memberships ----
 // Admin creates a permanent invite token (multi-use). Any TG user who opens
-// the resulting URL becomes a validator in this admin's family. Invites can
-// be revoked.
+// the resulting URL becomes a validator or admin in this admin's family.
+// Invites can be revoked.
 app.get('/api/invites', requireAdmin, (req, res) => {
-  const rows = db.prepare('SELECT id, token, created_at FROM invites WHERE parent_id = ? ORDER BY id DESC').all(req.session.userId);
+  const rows = db.prepare('SELECT id, token, role, created_at FROM invites WHERE parent_id = ? ORDER BY id DESC').all(req.session.userId);
   res.json(rows.map(r => ({ ...r, url: buildInviteUrl(r.token) })));
 });
 
 app.post('/api/invites', requireAdmin, (req, res) => {
+  const role = (req.body && req.body.role === 'admin') ? 'admin' : 'validator';
   const token = genToken();
-  const result = db.prepare('INSERT INTO invites (token, parent_id) VALUES (?, ?)').run(token, req.session.userId);
-  res.json({ id: result.lastInsertRowid, token, url: buildInviteUrl(token) });
+  const result = db.prepare('INSERT INTO invites (token, parent_id, role) VALUES (?, ?, ?)').run(token, req.session.userId, role);
+  res.json({ id: result.lastInsertRowid, token, role, url: buildInviteUrl(token) });
 });
 
 app.delete('/api/invites/:id', requireAdmin, (req, res) => {
@@ -421,8 +422,9 @@ app.post('/api/invites/redeem', requireAuth, (req, res) => {
   const u = db.prepare('SELECT role FROM users WHERE id = ?').get(req.session.userId);
   if (!u || u.role !== 'admin') return res.status(403).json({ error: 'only TG-registered users can join other families' });
   // Insert membership (ignore if already exists).
+  const invRole = inv.role || 'validator';
   try {
-    db.prepare("INSERT INTO memberships (user_id, parent_id, role) VALUES (?, ?, 'validator')").run(req.session.userId, inv.parent_id);
+    db.prepare('INSERT INTO memberships (user_id, parent_id, role) VALUES (?, ?, ?)').run(req.session.userId, inv.parent_id, invRole);
   } catch (e) {
     // UNIQUE violation = already member; treat as success.
   }
@@ -448,13 +450,13 @@ app.get('/api/my-families', requireAuth, (req, res) => {
   if (me.role === 'admin') {
     contexts.push({ parent_id: me.id, parent_username: me.username, family_name: me.family_name || null, role: 'admin', is_self: true });
     const memberships = db.prepare(`
-      SELECT m.parent_id, u.username AS parent_username, u.family_name
+      SELECT m.parent_id, m.role AS member_role, u.username AS parent_username, u.family_name
       FROM memberships m JOIN users u ON u.id = m.parent_id
       WHERE m.user_id = ?
       ORDER BY u.username
     `).all(me.id);
     for (const m of memberships) {
-      contexts.push({ parent_id: m.parent_id, parent_username: m.parent_username, family_name: m.family_name || null, role: 'validator', is_self: false });
+      contexts.push({ parent_id: m.parent_id, parent_username: m.parent_username, family_name: m.family_name || null, role: m.member_role || 'validator', is_self: false });
     }
   } else {
     const p = db.prepare('SELECT id, username, family_name FROM users WHERE id = ?').get(me.parent_id);
@@ -494,15 +496,27 @@ app.get('/api/validators', requireAdmin, (req, res) => {
 });
 
 app.post('/api/validators', requireAdmin, (req, res) => {
-  const { username, password } = req.body || {};
+  const { username, password, role } = req.body || {};
+  const targetRole = role === 'admin' ? 'admin' : 'validator';
   if (!username || !password) return res.status(400).json({ error: 'username and password required' });
   if (password.length < 3) return res.status(400).json({ error: 'password too short' });
   if (findUserByUsername(username)) return res.status(409).json({ error: 'username already taken' });
   const hash = bcrypt.hashSync(password, 10);
-  const result = db.prepare(
-    "INSERT INTO users (username, password_hash, role, parent_id) VALUES (?, ?, 'validator', ?)"
-  ).run(username, hash, req.session.userId);
-  res.json({ id: result.lastInsertRowid });
+  if (targetRole === 'validator') {
+    const result = db.prepare(
+      "INSERT INTO users (username, password_hash, role, parent_id) VALUES (?, ?, 'validator', ?)"
+    ).run(username, hash, req.session.userId);
+    res.json({ id: result.lastInsertRowid });
+  } else {
+    // Create a local admin user (their own empty family) + membership linking
+    // them into the current admin's family with admin-level access.
+    const result = db.prepare(
+      "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')"
+    ).run(username, hash);
+    const newUserId = result.lastInsertRowid;
+    db.prepare("INSERT INTO memberships (user_id, parent_id, role) VALUES (?, ?, 'admin')").run(newUserId, req.session.userId);
+    res.json({ id: newUserId });
+  }
 });
 
 app.delete('/api/validators/:id', requireAdmin, (req, res) => {
@@ -514,16 +528,16 @@ app.delete('/api/validators/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// Combined list of validators for the admin's current family:
+// Combined list of users for the admin's current family:
 // local password-based validators (users.role='validator', parent_id=owner)
-// + TG-invited admin-users that accepted an invite (memberships rows).
+// + users that accepted an invite (memberships rows — both validator and admin role).
 app.get('/api/members', requireAdmin, (req, res) => {
   const ownerId = ownerOf(req);
   const local = db.prepare(
-    "SELECT id, username, tg_user_id, created_at, 'local' AS type FROM users WHERE role = 'validator' AND parent_id = ? ORDER BY username"
+    "SELECT id, username, tg_user_id, created_at, 'local' AS type, 'validator' AS member_role FROM users WHERE role = 'validator' AND parent_id = ? ORDER BY username"
   ).all(ownerId);
   const tgMembers = db.prepare(`
-    SELECT u.id, u.username, u.tg_user_id, m.created_at, 'tg_member' AS type
+    SELECT u.id, u.username, u.tg_user_id, m.created_at, 'tg_member' AS type, m.role AS member_role
     FROM memberships m
     JOIN users u ON u.id = m.user_id
     WHERE m.parent_id = ?
@@ -545,7 +559,16 @@ app.post('/api/validators/:id/password', requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { password } = req.body || {};
   if (!password || password.length < 3) return res.status(400).json({ error: 'password too short' });
-  const v = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'validator' AND parent_id = ?").get(id, req.session.userId);
+  const ownerId = req.session.userId;
+  // Allow for local validators (parent_id = owner) or local admin members
+  // (has a membership in this family, no TG account = locally-created admin).
+  const v = db.prepare(`
+    SELECT u.id FROM users u
+    WHERE u.id = ? AND u.tg_user_id IS NULL AND (
+      (u.role = 'validator' AND u.parent_id = ?)
+      OR EXISTS(SELECT 1 FROM memberships m WHERE m.user_id = u.id AND m.parent_id = ?)
+    )
+  `).get(id, ownerId, ownerId);
   if (!v) return res.status(404).json({ error: 'not found' });
   const hash = bcrypt.hashSync(password, 10);
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, id);

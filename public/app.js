@@ -148,8 +148,11 @@ function startFamilyNamePolling() {
       if (!sel) return;
       families.forEach(f => {
         const opt = [...sel.options].find(o => parseInt(o.value, 10) === f.parent_id);
-        if (opt) opt.textContent = f.is_self ? t('family.my')
-          : (f.family_name || f.parent_username) + (f.role === 'validator' ? t('family.validator_suffix') : '');
+        if (opt) {
+          const name = f.family_name || f.parent_username;
+          const suffix = f.role === 'admin' ? t('family.admin_suffix') : t('family.validator_suffix');
+          opt.textContent = f.is_self ? t('family.my') : name + suffix;
+        }
       });
     } catch (_) { /* ignore */ }
   }, 15000);
@@ -168,11 +171,17 @@ function renderFamilySwitcher() {
   const families = state.families || [];
   if (families.length < 2) return null;
   const currentParentId = state.user.context && state.user.context.parent_id;
+  const familyLabel = (f) => {
+    if (f.is_self) return t('family.my');
+    const name = f.family_name || f.parent_username;
+    const suffix = f.role === 'admin' ? t('family.admin_suffix') : t('family.validator_suffix');
+    return name + suffix;
+  };
   const sel = h('select', { class: 'family-select' },
     ...families.map(f => h('option', {
       value: String(f.parent_id),
       selected: f.parent_id === currentParentId
-    }, f.is_self ? t('family.my') : (f.family_name || f.parent_username) + (f.role === 'validator' ? t('family.validator_suffix') : '')))
+    }, familyLabel(f)))
   );
   sel.onchange = async () => {
     const pid = parseInt(sel.value, 10);
@@ -1359,20 +1368,39 @@ async function loadValidators() {
   state.validators = await api('/api/members');
 }
 
-// Manual creation of a validator account by login/password (legacy flow,
-// useful for non-Telegram or browser-only validators).
+// Manual creation of a validator or admin account by login/password.
 function renderValidatorAddBlock() {
   const newUser = h('input', { placeholder: t('validators.login_placeholder') });
   const newPass = h('input', { type: 'password', placeholder: t('validators.password_placeholder') });
+  // Role toggle state stored on the DOM element itself so re-renders don't reset it.
+  if (!renderValidatorAddBlock._role) renderValidatorAddBlock._role = 'validator';
+  const currentRole = renderValidatorAddBlock._role;
+
+  const setRole = (r) => { renderValidatorAddBlock._role = r; render(); };
+
+  const roleToggle = h('div', { style: 'display: flex; gap: 6px; margin-bottom: 8px' },
+    h('button', {
+      class: currentRole === 'validator' ? 'secondary active' : 'secondary',
+      style: currentRole === 'validator' ? 'font-weight: 600' : '',
+      onclick: () => setRole('validator')
+    }, t('validators.role_validator')),
+    h('button', {
+      class: currentRole === 'admin' ? 'secondary active' : 'secondary',
+      style: currentRole === 'admin' ? 'font-weight: 600' : '',
+      onclick: () => setRole('admin')
+    }, t('validators.role_admin'))
+  );
+
   return h('div', { class: 'card' },
     h('div', { class: 'section-title' }, t('validators.add_title')),
     h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t('validators.add_hint')),
+    roleToggle,
     h('div', { class: 'row', style: 'margin-bottom: 8px' }, newUser, newPass),
     h('button', {
       onclick: async () => {
         if (!newUser.value.trim() || !newPass.value) return;
         try {
-          await api('/api/validators', { method: 'POST', body: { username: newUser.value.trim(), password: newPass.value } });
+          await api('/api/validators', { method: 'POST', body: { username: newUser.value.trim(), password: newPass.value, role: renderValidatorAddBlock._role } });
           newUser.value = ''; newPass.value = '';
           await loadValidators();
           render();
@@ -1382,54 +1410,72 @@ function renderValidatorAddBlock() {
   );
 }
 
-// Combined list of validators in the family — both legacy login/password
-// accounts (type='local') and TG-invited memberships (type='tg_member').
+// Renders a single member row (shared between validators and admins sections).
+function renderMemberRow(v) {
+  const isTg = v.type === 'tg_member';
+  // Local user = no tg_linked (either local validator or local admin via form).
+  const isLocal = !v.tg_linked;
+  return h('div', { class: 'kid-row' },
+    h('div', { style: 'flex: 1' },
+      h('div', { style: 'font-weight: 600' }, v.username),
+      h('div', { class: 'kid-meta' },
+        v.tg_linked ? t(isTg ? 'validators.tg_guest' : 'validators.tg_linked') : t('validators.tg_not_linked')
+      )
+    ),
+    isLocal && h('button', {
+      class: 'icon-btn',
+      title: t('validators.change_password_title'),
+      onclick: async () => {
+        const p = prompt(t('validators.change_password_prompt').replace('{name}', v.username));
+        if (!p) return;
+        try {
+          await api(`/api/validators/${v.id}/password`, { method: 'POST', body: { password: p } });
+          alert(t('validators.password_changed'));
+        } catch (e) { showError(e); }
+      }
+    }, '🔑'),
+    h('button', {
+      class: 'icon-btn danger',
+      title: isTg ? t('validators.revoke_title') : t('validators.delete_title'),
+      onclick: async () => {
+        const msg = isTg
+          ? t('validators.revoke_confirm').replace('{name}', v.username)
+          : t('validators.delete_confirm').replace('{name}', v.username);
+        if (!confirm(msg)) return;
+        try {
+          if (isTg) {
+            await api(`/api/members/${v.id}`, { method: 'DELETE' });
+          } else {
+            await api(`/api/validators/${v.id}`, { method: 'DELETE' });
+          }
+          await loadValidators();
+          render();
+        } catch (e) { showError(e); }
+      }
+    }, '🗑')
+  );
+}
+
+// Combined list of users split into two sections: Validators and Admins.
 function renderValidatorsListBlock() {
   const list = state.validators || [];
-  return h('div', { class: 'card' },
-    h('div', { class: 'section-title' }, t('validators.list_title')),
-    list.length === 0
-      ? h('div', { class: 'empty' }, t('validators.empty'))
-      : h('div', {}, ...list.map(v => {
-          const isTg = v.type === 'tg_member';
-          return h('div', { class: 'kid-row' },
-            h('div', { style: 'flex: 1' },
-              h('div', { style: 'font-weight: 600' }, v.username),
-              h('div', { class: 'kid-meta' }, isTg ? t('validators.tg_guest') : (v.tg_linked ? t('validators.tg_linked') : t('validators.tg_not_linked')))
-            ),
-            !isTg && h('button', {
-              class: 'icon-btn',
-              title: t('validators.change_password_title'),
-              onclick: async () => {
-                const p = prompt(t('validators.change_password_prompt').replace('{name}', v.username));
-                if (!p) return;
-                try {
-                  await api(`/api/validators/${v.id}/password`, { method: 'POST', body: { password: p } });
-                  alert(t('validators.password_changed'));
-                } catch (e) { showError(e); }
-              }
-            }, '🔑'),
-            h('button', {
-              class: 'icon-btn danger',
-              title: isTg ? t('validators.revoke_title') : t('validators.delete_title'),
-              onclick: async () => {
-                const msg = isTg
-                  ? t('validators.revoke_confirm').replace('{name}', v.username)
-                  : t('validators.delete_confirm').replace('{name}', v.username);
-                if (!confirm(msg)) return;
-                try {
-                  if (isTg) {
-                    await api(`/api/members/${v.id}`, { method: 'DELETE' });
-                  } else {
-                    await api(`/api/validators/${v.id}`, { method: 'DELETE' });
-                  }
-                  await loadValidators();
-                  render();
-                } catch (e) { showError(e); }
-              }
-            }, '🗑')
-          );
-        }))
+  const validators = list.filter(v => (v.member_role || 'validator') === 'validator');
+  const admins = list.filter(v => v.member_role === 'admin');
+
+  return h('div', {},
+    h('div', { class: 'card' },
+      h('div', { class: 'section-title' }, t('validators.list_title')),
+      validators.length === 0
+        ? h('div', { class: 'empty' }, t('validators.empty'))
+        : h('div', {}, ...validators.map(renderMemberRow))
+    ),
+    h('div', { style: 'height: 12px' }),
+    h('div', { class: 'card' },
+      h('div', { class: 'section-title' }, t('validators.admins_section')),
+      admins.length === 0
+        ? h('div', { class: 'empty' }, t('validators.admins_empty'))
+        : h('div', {}, ...admins.map(renderMemberRow))
+    )
   );
 }
 
@@ -1440,8 +1486,8 @@ async function loadInvites() {
 function renderInvitesBlock() {
   const list = state.invites || [];
   // Share helpers — copy to clipboard, or open Telegram share picker.
-  const shareViaTelegram = (url) => {
-    const msg = encodeURIComponent(t('invites.share_msg'));
+  const shareViaTelegram = (url, msgKey) => {
+    const msg = encodeURIComponent(t(msgKey || 'invites.share_msg'));
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${msg}`;
     if (tg && tg.openTelegramLink) tg.openTelegramLink(shareUrl);
     else window.open(shareUrl, '_blank');
@@ -1452,7 +1498,6 @@ function renderInvitesBlock() {
       state.inviteCopiedAt = Date.now();
       render();
     } catch {
-      // Fallback: select a temp textarea
       const ta = document.createElement('textarea');
       ta.value = url; document.body.appendChild(ta); ta.select();
       try { document.execCommand('copy'); state.inviteCopiedAt = Date.now(); render(); }
@@ -1460,44 +1505,53 @@ function renderInvitesBlock() {
     }
   };
 
-  return h('div', { class: 'card' },
-    h('div', { class: 'section-title' }, t('invites.title')),
-    h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t('invites.hint')),
-    list.length === 0
-      ? h('div', { class: 'empty' }, t('invites.empty'))
-      : h('div', {}, ...list.map(inv => h('div', { class: 'kid-row', style: 'flex-direction: column; gap: 6px; align-items: stretch' },
-          h('div', {},
-            h('div', { style: 'font-family: monospace; font-size: 12px; word-break: break-all' }, inv.url || t('invites.no_url')),
-            h('div', { class: 'kid-meta' }, t('invites.created_at').replace('{date}', inv.created_at || ''))
-          ),
-          h('div', { style: 'display: flex; gap: 6px; align-items: center' },
-            inv.url && h('button', { class: 'secondary', onclick: () => copyToClipboard(inv.url) }, t('invites.copy')),
-            inv.url && h('button', { class: 'secondary', onclick: () => shareViaTelegram(inv.url) }, t('invites.share')),
-            h('button', {
-              class: 'icon-btn danger',
-              title: t('invites.revoke_title'),
-              onclick: async () => {
-                if (!confirm(t('invites.revoke_confirm'))) return;
-                try {
-                  await api(`/api/invites/${inv.id}`, { method: 'DELETE' });
-                  await loadInvites();
-                  render();
-                } catch (e) { showError(e); }
-              }
-            }, '🗑')
-          )
-        ))),
-    state.inviteCopiedAt && h('div', { class: 'flash-success' }, t('invites.copied')),
-    h('button', {
-      style: 'margin-top: 10px',
-      onclick: async () => {
-        try {
-          await api('/api/invites', { method: 'POST' });
-          await loadInvites();
-          render();
-        } catch (e) { showError(e); }
-      }
-    }, t('invites.create'))
+  const renderInviteSection = (role, titleKey, hintKey, shareMsgKey) => {
+    const filtered = list.filter(inv => (inv.role || 'validator') === role);
+    return h('div', { class: 'card' },
+      h('div', { class: 'section-title' }, t(titleKey)),
+      h('p', { class: 'muted', style: 'margin-bottom: 10px' }, t(hintKey)),
+      filtered.length === 0
+        ? h('div', { class: 'empty' }, t('invites.empty'))
+        : h('div', {}, ...filtered.map(inv => h('div', { class: 'kid-row', style: 'flex-direction: column; gap: 6px; align-items: stretch' },
+            h('div', {},
+              h('div', { style: 'font-family: monospace; font-size: 12px; word-break: break-all' }, inv.url || t('invites.no_url')),
+              h('div', { class: 'kid-meta' }, t('invites.created_at').replace('{date}', inv.created_at || ''))
+            ),
+            h('div', { style: 'display: flex; gap: 6px; align-items: center' },
+              inv.url && h('button', { class: 'secondary', onclick: () => copyToClipboard(inv.url) }, t('invites.copy')),
+              inv.url && h('button', { class: 'secondary', onclick: () => shareViaTelegram(inv.url, shareMsgKey) }, t('invites.share')),
+              h('button', {
+                class: 'icon-btn danger',
+                title: t('invites.revoke_title'),
+                onclick: async () => {
+                  if (!confirm(t('invites.revoke_confirm'))) return;
+                  try {
+                    await api(`/api/invites/${inv.id}`, { method: 'DELETE' });
+                    await loadInvites();
+                    render();
+                  } catch (e) { showError(e); }
+                }
+              }, '🗑')
+            )
+          ))),
+      state.inviteCopiedAt && h('div', { class: 'flash-success' }, t('invites.copied')),
+      h('button', {
+        style: 'margin-top: 10px',
+        onclick: async () => {
+          try {
+            await api('/api/invites', { method: 'POST', body: { role } });
+            await loadInvites();
+            render();
+          } catch (e) { showError(e); }
+        }
+      }, t('invites.create'))
+    );
+  };
+
+  return h('div', {},
+    renderInviteSection('validator', 'invites.validator_title', 'invites.validator_hint', 'invites.share_msg'),
+    h('div', { style: 'height: 12px' }),
+    renderInviteSection('admin', 'invites.admin_title', 'invites.admin_hint', 'invites.admin_share_msg')
   );
 }
 
@@ -1740,6 +1794,7 @@ function renderSettings() {
       onclick: async () => {
         state.settingsTab = tb.id;
         if (tb.id === 'validators') try { await loadValidators(); } catch (_) {}
+        if (tb.id === 'invites') try { await loadInvites(); } catch (_) {}
         render();
       }
     }, tb.label))
@@ -1753,7 +1808,7 @@ function renderSettings() {
   } else if (tab === 'invites') {
     content = renderInvitesBlock();
   } else {
-    content = h('div', {}, renderValidatorAddBlock(), renderValidatorsListBlock());
+    content = h('div', {}, renderValidatorAddBlock(), h('div', { style: 'height: 12px' }), renderValidatorsListBlock());
   }
 
   return h('div', {},

@@ -119,6 +119,33 @@ function ensureColumn(table, column, definition) {
 ensureColumn('users', 'admin_pin_hash', 'TEXT');
 ensureColumn('users', 'family_name', 'TEXT');
 
+// Invite role: 'validator' (default) or 'admin'.
+ensureColumn('invites', 'role', "TEXT NOT NULL DEFAULT 'validator'");
+
+// Migrate memberships CHECK constraint to allow admin-role memberships.
+// SQLite can't ALTER a CHECK constraint, so we recreate the table if needed.
+{
+  const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memberships'").get();
+  if (tbl && !tbl.sql.includes("'admin'")) {
+    db.exec(`
+      ALTER TABLE memberships RENAME TO memberships_old;
+      CREATE TABLE memberships (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        parent_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('admin','validator')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(user_id, parent_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);
+      CREATE INDEX IF NOT EXISTS idx_memberships_parent ON memberships(parent_id);
+      INSERT INTO memberships (id, user_id, parent_id, role, created_at)
+        SELECT id, user_id, parent_id, role, created_at FROM memberships_old;
+      DROP TABLE memberships_old;
+    `);
+  }
+}
+
 // No default seed. Admin accounts are auto-created by /api/tg-auth on first
 // Telegram login (each TG user = own tenant). Validators are created inside
 // each admin's settings.

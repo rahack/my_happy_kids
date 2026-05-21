@@ -155,7 +155,8 @@ const TRANSLATIONS = {
     'settings.tab_general': 'Общее',
     'settings.tab_pin': 'PIN',
     'settings.tab_invites': 'Приглашения',
-    'settings.tab_validators': 'Валидаторы',
+    'settings.tab_validators': 'Пользователи',
+    'settings.tab_users': 'Пользователи',
 
     // General settings
     'general.family_name_title': 'Название семьи',
@@ -196,8 +197,8 @@ const TRANSLATIONS = {
     'pin.err_generic': 'Не удалось выполнить операцию',
 
     // Invites
-    'invites.title': 'Пригласить валидатора через Telegram',
-    'invites.hint': 'Создайте ссылку и отправьте её любому пользователю Telegram. Открыв её, он станет валидатором в вашей семье. Ссылка постоянная и многоразовая — можно пригласить нескольких людей по одной ссылке.',
+    'invites.title': 'Пригласить через Telegram',
+    'invites.hint': 'Создайте ссылку и отправьте её любому пользователю Telegram.',
     'invites.empty': 'Пока нет приглашений.',
     'invites.no_url': '(нет URL: бот не запущен)',
     'invites.created_at': 'Создано: {date}',
@@ -208,15 +209,24 @@ const TRANSLATIONS = {
     'invites.copied': 'Ссылка скопирована',
     'invites.create': 'Создать ссылку-приглашение',
     'invites.share_msg': 'Приглашение в Happy Kids: подтверждайте выполнение заданий моего ребёнка',
+    'invites.validator_title': 'Пригласить валидатора',
+    'invites.validator_hint': 'Открыв ссылку, пользователь Telegram станет валидатором в вашей семье — сможет подтверждать выполнение заданий. Ссылка постоянная и многоразовая.',
+    'invites.admin_title': 'Пригласить администратора',
+    'invites.admin_hint': 'Открыв ссылку, пользователь Telegram получит права администратора — сможет полностью управлять детьми, заданиями и наградами. Ссылка постоянная и многоразовая.',
+    'invites.admin_share_msg': 'Приглашение в Happy Kids: управляйте заданиями и наградами нашего ребёнка',
 
-    // Validators
-    'validators.add_title': 'Добавить валидатора по логину и паролю',
-    'validators.add_hint': 'Альтернатива приглашению через Telegram: создайте аккаунт с логином/паролем и передайте их валидатору. Подходит, если валидатор будет заходить из браузера.',
-    'validators.login_placeholder': 'Логин валидатора',
+    // Validators / Users
+    'validators.add_title': 'Добавить пользователя по логину и паролю',
+    'validators.add_hint': 'Альтернатива приглашению через Telegram: создайте аккаунт с логином/паролем. Подходит, если пользователь будет заходить из браузера.',
+    'validators.login_placeholder': 'Логин',
     'validators.password_placeholder': 'Пароль',
     'validators.add': 'Добавить',
-    'validators.list_title': 'Валидаторы семьи',
+    'validators.role_validator': 'Валидатор',
+    'validators.role_admin': 'Администратор',
+    'validators.list_title': 'Валидаторы',
     'validators.empty': 'Пока нет валидаторов.',
+    'validators.admins_section': 'Администраторы',
+    'validators.admins_empty': 'Пока нет администраторов.',
     'validators.tg_guest': 'Гость через Telegram',
     'validators.tg_linked': 'Telegram привязан',
     'validators.tg_not_linked': 'Telegram не привязан',
@@ -226,7 +236,7 @@ const TRANSLATIONS = {
     'validators.revoke_title': 'Отозвать доступ',
     'validators.delete_title': 'Удалить',
     'validators.revoke_confirm': 'Отозвать доступ у {name}?',
-    'validators.delete_confirm': 'Удалить валидатора {name}?',
+    'validators.delete_confirm': 'Удалить {name}?',
 
     // Telegram block
     'telegram.title': 'Telegram',
@@ -241,6 +251,7 @@ const TRANSLATIONS = {
     // Family switcher
     'family.my': 'Моя семья',
     'family.validator_suffix': ' (Валидатор)',
+    'family.admin_suffix': ' (Администратор)',
 
     // Pending tasks
     'pending.title': 'На проверке',
@@ -422,7 +433,8 @@ const TRANSLATIONS = {
     'settings.tab_general': 'General',
     'settings.tab_pin': 'PIN',
     'settings.tab_invites': 'Invites',
-    'settings.tab_validators': 'Validators',
+    'settings.tab_validators': 'Users',
+    'settings.tab_users': 'Users',
 
     // General settings
     'general.family_name_title': 'Family name',
@@ -463,8 +475,8 @@ const TRANSLATIONS = {
     'pin.err_generic': 'Operation failed',
 
     // Invites
-    'invites.title': 'Invite a validator via Telegram',
-    'invites.hint': 'Create a link and send it to any Telegram user. By opening it, they become a validator in your family. The link is permanent and reusable — you can invite multiple people with one link.',
+    'invites.title': 'Invite via Telegram',
+    'invites.hint': 'Create a link and send it to any Telegram user.',
     'invites.empty': 'No invites yet.',
     'invites.no_url': '(no URL: bot not running)',
     'invites.created_at': 'Created: {date}',
@@ -475,15 +487,24 @@ const TRANSLATIONS = {
     'invites.copied': 'Link copied',
     'invites.create': 'Create invite link',
     'invites.share_msg': 'Invitation to Happy Kids: confirm my child\'s task completion',
+    'invites.validator_title': 'Invite a validator',
+    'invites.validator_hint': 'By opening this link, the Telegram user becomes a validator in your family — they can confirm task completion. The link is permanent and reusable.',
+    'invites.admin_title': 'Invite an admin',
+    'invites.admin_hint': 'By opening this link, the Telegram user gets admin rights — they can fully manage kids, tasks and rewards. The link is permanent and reusable.',
+    'invites.admin_share_msg': 'Invitation to Happy Kids: manage our child\'s tasks and rewards',
 
-    // Validators
-    'validators.add_title': 'Add validator by login and password',
-    'validators.add_hint': 'Alternative to Telegram invite: create an account with a login/password and share them with the validator. Suitable for validators who sign in from a browser.',
-    'validators.login_placeholder': 'Validator username',
+    // Validators / Users
+    'validators.add_title': 'Add user by login and password',
+    'validators.add_hint': 'Alternative to Telegram invite: create an account with a login/password. Suitable for users who sign in from a browser.',
+    'validators.login_placeholder': 'Username',
     'validators.password_placeholder': 'Password',
     'validators.add': 'Add',
-    'validators.list_title': 'Family validators',
+    'validators.role_validator': 'Validator',
+    'validators.role_admin': 'Admin',
+    'validators.list_title': 'Validators',
     'validators.empty': 'No validators yet.',
+    'validators.admins_section': 'Admins',
+    'validators.admins_empty': 'No admins yet.',
     'validators.tg_guest': 'Guest via Telegram',
     'validators.tg_linked': 'Telegram linked',
     'validators.tg_not_linked': 'Telegram not linked',
@@ -493,7 +514,7 @@ const TRANSLATIONS = {
     'validators.revoke_title': 'Revoke access',
     'validators.delete_title': 'Delete',
     'validators.revoke_confirm': 'Revoke access for {name}?',
-    'validators.delete_confirm': 'Delete validator {name}?',
+    'validators.delete_confirm': 'Delete {name}?',
 
     // Telegram block
     'telegram.title': 'Telegram',
@@ -508,6 +529,7 @@ const TRANSLATIONS = {
     // Family switcher
     'family.my': 'My family',
     'family.validator_suffix': ' (Validator)',
+    'family.admin_suffix': ' (Admin)',
 
     // Pending tasks
     'pending.title': 'Pending review',
