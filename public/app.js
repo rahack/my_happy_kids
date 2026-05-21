@@ -30,6 +30,7 @@ const state = {
   error: null,
   mode: localStorage.getItem('mode') || 'view', // 'view' | 'admin' | 'validator'
   modeAuthTarget: 'admin',   // which mode the auth modal is unlocking ('admin' | 'validator')
+  photoLightbox: null,       // photo URL currently shown in fullscreen lightbox (null = closed)
 };
 
 // Telegram initData — non-empty only when running inside the Telegram Mini App.
@@ -508,7 +509,7 @@ function renderAvatar(k, size = 40) {
     'background:#5eb5f7;color:#fff;font-weight:600;overflow:hidden;';
   if (k.photo) {
     const img = h('img', { src: k.photo, alt: k.name, style: `width:100%;height:100%;object-fit:cover` });
-    return h('div', { class: 'avatar', style }, img);
+    return h('div', { class: 'avatar', style: style + 'cursor:pointer;', onclick: (e) => { e.stopPropagation(); state.photoLightbox = k.photo; render(); } }, img);
   }
   const initial = (k.name || '?').trim().charAt(0).toUpperCase();
   return h('div', { class: 'avatar', style }, initial);
@@ -1821,6 +1822,14 @@ function renderPending() {
   );
 }
 
+// ---- Photo lightbox ----
+function renderPhotoLightbox() {
+  if (!state.photoLightbox) return null;
+  return h('div', { class: 'photo-lightbox', onclick: () => { state.photoLightbox = null; render(); } },
+    h('img', { src: state.photoLightbox, alt: '', onclick: (e) => e.stopPropagation() })
+  );
+}
+
 // ---- Render dispatcher ----
 function render() {
   if (!state.route) return;  // still booting, nothing to show yet
@@ -1838,6 +1847,8 @@ function render() {
   root.append(view);
   const modal = renderModeAuthModal();
   if (modal) root.append(modal);
+  const lightbox = renderPhotoLightbox();
+  if (lightbox) root.append(lightbox);
 }
 
 // ---- Setup family (mandatory on first login) ----

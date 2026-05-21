@@ -350,3 +350,18 @@ input::placeholder { color: #999; }
 }
 .empty { text-align: center; color: #888; padding: 20px; }
 
+/* Photo lightbox */
+.photo-lightbox {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.88);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 300;
+  cursor: zoom-out;
+}
+.photo-lightbox img {
+  max-width: 92vw; max-height: 92vh;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  cursor: default;
+}
+
