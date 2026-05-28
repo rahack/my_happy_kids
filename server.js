@@ -793,18 +793,22 @@ app.delete('/api/reward-templates/:id', requireAdmin, (req, res) => {
 app.post('/api/kids/:id/reward', requireAdmin, (req, res) => {
   const ownerId = ownerOf(req);
   const kidId = parseInt(req.params.id, 10);
-  const { date, title } = req.body || {};
+  const { date, title, photo } = req.body || {};
   const d = date || today();
   if (!title) return res.status(400).json({ error: 'title required' });
   if (!kidGuard(kidId, ownerId)) return res.status(404).json({ error: 'kid not found' });
   const existing = db.prepare('SELECT id FROM rewards WHERE kid_id = ? AND date = ?').get(kidId, d);
   if (existing) {
-    db.prepare('UPDATE rewards SET title = ?, claimed = 0, claimed_at = NULL WHERE id = ?').run(title, existing.id);
+    if (photo !== undefined) {
+      db.prepare('UPDATE rewards SET title = ?, photo = ?, claimed = 0, claimed_at = NULL WHERE id = ?').run(title, photo || null, existing.id);
+    } else {
+      db.prepare('UPDATE rewards SET title = ?, claimed = 0, claimed_at = NULL WHERE id = ?').run(title, existing.id);
+    }
     res.json({ id: existing.id, updated: true });
   } else {
     const result = db.prepare(
-      'INSERT INTO rewards (owner_id, kid_id, date, title) VALUES (?, ?, ?, ?)'
-    ).run(ownerId, kidId, d, title);
+      'INSERT INTO rewards (owner_id, kid_id, date, title, photo) VALUES (?, ?, ?, ?, ?)'
+    ).run(ownerId, kidId, d, title, photo || null);
     res.json({ id: result.lastInsertRowid });
   }
 });

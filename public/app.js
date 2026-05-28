@@ -31,6 +31,7 @@ const state = {
   mode: localStorage.getItem('mode') || 'view', // 'view' | 'admin' | 'validator'
   modeAuthTarget: 'admin',   // which mode the auth modal is unlocking ('admin' | 'validator')
   photoLightbox: null,       // photo URL currently shown in fullscreen lightbox (null = closed)
+  _rewardPhoto: null,        // pending photo for reward create/edit (data URL, cleared after save)
 };
 
 // Telegram initData — non-empty only when running inside the Telegram Mini App.
@@ -837,6 +838,7 @@ async function openKid(id) {
     state.rewardUnlocked = false;
     state.showUnlockForm = false;
     state.unlockError = '';
+    state._rewardPhoto = null;
     // Preload templates so the datalists are available on the kid page
     if (isAdmin()) await Promise.all([loadTaskTemplates(), loadRewardTemplates()]);
     go('kid');
@@ -990,6 +992,37 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
   const claimed = reward && reward.claimed;
   const unlocked = !!state.rewardUnlocked || claimed;
 
+  // Shared photo display helper — shows reward photo if present and conditions allow
+  const rewardImg = (r) => r && r.photo
+    ? h('img', { src: r.photo, style: 'max-width:200px;max-height:200px;border-radius:12px;object-fit:cover;margin-bottom:8px;display:block;margin-left:auto;margin-right:auto' })
+    : null;
+
+  // Shared photo picker for admin forms.
+  // Elements are created once per render and reused across form variants
+  // (only one form is visible at a time, so one pair of elements is enough).
+  let _photoFileInput = null;
+  let _photoBtn = null;
+  if (admin) {
+    _photoFileInput = h('input', { type: 'file', accept: 'image/*', style: 'display:none' });
+    _photoBtn = h('button', { class: 'secondary', type: 'button', style: 'padding:8px 12px;flex-shrink:0' },
+      state._rewardPhoto ? '📷✓' : '📷');
+    _photoFileInput.onchange = async () => {
+      const f = _photoFileInput.files && _photoFileInput.files[0];
+      if (!f) return;
+      try { state._rewardPhoto = await readPhotoAsDataURL(f, 300); _photoBtn.textContent = '📷✓'; }
+      catch (e) { showError(e); }
+    };
+    _photoBtn.onclick = () => _photoFileInput.click();
+  }
+
+  // Build API body including photo only when one is pending (null preserves existing photo)
+  function rewardBody(extra) {
+    const body = { ...extra };
+    if (state._rewardPhoto !== null) body.photo = state._rewardPhoto;
+    return body;
+  }
+  function afterSave() { state._rewardPhoto = null; reloadKid(); }
+
   // --- Past day: read-only, reward shown openly if claimed, locked otherwise ---
   if (dayType === 'past') {
     if (!reward) return null;
@@ -997,6 +1030,7 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
       return h('div', { class: 'card' },
         h('div', { class: 'section-title' }, t('reward.title_trophy')),
         h('div', { class: 'reward claimed' },
+          rewardImg(reward),
           h('div', { style: 'font-size: 40px' }, '🏆'),
           h('h3', {}, reward.title),
           h('div', { class: 'muted' }, t('reward.claimed_label'))
@@ -1035,10 +1069,11 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
         h('div', { class: 'muted', style: 'margin-bottom: 8px' }, t('reward.not_assigned_yet')),
         h('div', { class: 'row' },
           newInput,
+          _photoFileInput, _photoBtn,
           h('button', { onclick: async () => {
             if (!newInput.value.trim()) return;
-            await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: { date: day.date, title: newInput.value.trim() } });
-            reloadKid();
+            await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: rewardBody({ date: day.date, title: newInput.value.trim() }) });
+            afterSave();
           } }, t('reward.assign'))
         )
       );
@@ -1057,11 +1092,12 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
         h('div', { class: 'section-title' }, t('reward.edit_title')),
         h('div', { class: 'row' },
           editInput,
+          _photoFileInput, _photoBtn,
           h('button', { class: 'secondary', onclick: async () => {
             if (!editInput.value.trim()) return;
-            await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: { date: day.date, title: editInput.value.trim() } });
+            await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: rewardBody({ date: day.date, title: editInput.value.trim() }) });
             editInput.value = '';
-            reloadKid();
+            afterSave();
           } }, t('reward.save'))
         )
       );
@@ -1093,10 +1129,11 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
       h('div', { class: 'muted', style: 'margin-bottom: 8px' }, t('reward.not_assigned_today')),
       h('div', { class: 'row' },
         newInput,
+        _photoFileInput, _photoBtn,
         h('button', { onclick: async () => {
           if (!newInput.value.trim()) return;
-          await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: { title: newInput.value.trim() } });
-          reloadKid();
+          await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: rewardBody({ title: newInput.value.trim() }) });
+          afterSave();
         } }, t('reward.assign'))
       )
     );
@@ -1120,6 +1157,7 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
     inner.push(
       h('div', { class: 'section-title' }, t('reward.trophy_daily')),
       h('div', { class: 'reward claimed' },
+        rewardImg(reward),
         h('div', { style: 'font-size: 40px' }, '🏆'),
         h('h3', {}, reward.title),
         h('div', { class: 'muted' }, t('reward.received'))
@@ -1210,7 +1248,7 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
     );
   }
 
-  // Admin extra: edit reward title (only when reward exists). Input has no
+  // Admin extra: edit reward title/photo (only when reward exists). Input has no
   // prefilled value to avoid leaking the title to anyone glancing at the screen.
   if (admin && reward) {
     const editInput = comboInput(t('reward.new_placeholder'), (state.rewardTemplates || []).map(r => r.title));
@@ -1218,11 +1256,12 @@ function renderRewardSection(kid, day, allDone, admin, dayType) {
       h('div', { class: 'section-title' }, t('reward.edit_title')),
       h('div', { class: 'row' },
         editInput,
+        _photoFileInput, _photoBtn,
         h('button', { class: 'secondary', onclick: async () => {
           if (!editInput.value.trim()) return;
-          await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: { title: editInput.value.trim() } });
+          await api(`/api/kids/${kid.id}/reward`, { method: 'POST', body: rewardBody({ title: editInput.value.trim() }) });
           editInput.value = '';
-          reloadKid();
+          afterSave();
         } }, t('reward.save'))
       )
     );

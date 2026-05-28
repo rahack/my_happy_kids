@@ -118,6 +118,7 @@ function ensureColumn(table, column, definition) {
 // the account password (which TG-registered admins never know — it's random).
 ensureColumn('users', 'admin_pin_hash', 'TEXT');
 ensureColumn('users', 'family_name', 'TEXT');
+ensureColumn('rewards', 'photo', 'TEXT');
 
 // Invite role: 'validator' (default) or 'admin'.
 ensureColumn('invites', 'role', "TEXT NOT NULL DEFAULT 'validator'");
